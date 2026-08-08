@@ -11,7 +11,7 @@ import sys
 
 from .evaluate import evaluate, format_evaluation
 from .hypotheses import REGISTRY
-from .registry import Registry
+from worker.app.store import open_registry
 
 
 def cmd_list() -> None:
@@ -24,7 +24,7 @@ def cmd_list() -> None:
         print(f"    grid: {len(h.param_grid())} ชุดพารามิเตอร์ · ต้นทุน: {h.cost_note}\n")
 
 
-def cmd_test(which: str, reg: Registry) -> None:
+def cmd_test(which: str, reg) -> None:
     names = list(REGISTRY) if which == "all" else [which]
     for name in names:
         if name not in REGISTRY:
@@ -46,7 +46,7 @@ def cmd_test(which: str, reg: Registry) -> None:
         reg.record(ev)
 
 
-def cmd_history(reg: Registry) -> None:
+def cmd_history(reg) -> None:
     s = reg.summary()
     print(f"\n📚 Edge Lab registry — ทดสอบมาแล้ว {s['runs']} ครั้ง "
           f"({s['hypotheses']} สมมติฐาน) · ผ่าน {s['passed']}\n")
@@ -67,7 +67,7 @@ def main(argv: list[str]) -> None:
     cmd = argv[1] if len(argv) > 1 else "list"
     if cmd == "list":
         cmd_list(); return
-    reg = Registry()
+    reg = open_registry()
     if cmd == "test":
         cmd_test(argv[2] if len(argv) > 2 else "all", reg)
     elif cmd == "history":

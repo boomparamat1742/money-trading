@@ -35,13 +35,14 @@ cross-sectional, funding carry)
 | **Walk-forward** (จูนพารามิเตอร์บน train → validate OOS หลาย fold) | ✅ ใช้งานได้ |
 | **Research track** (`research/`: momentum, xsmom, funding_carry) | ✅ ใช้งานได้ |
 | **Data fetcher** (klines + funding จาก Binance public API) | ✅ ใช้งานได้ |
-| **Tests** (pytest, 52 ผ่าน) | ✅ |
+| **Tests** (pytest, 58 ผ่าน) | ✅ |
 | Data quality / candle builder | ✅ |
 | **Live data (Binance WebSocket + gap recovery)** | ✅ ใช้งานได้ (ทดสอบเชื่อมต่อจริงแล้ว) |
 | **LINE Messaging API แจ้งเตือน** | ✅ ใช้งานได้ (ต้องใส่ token เอง) |
 | **Live loop** (`worker.app.main`: WS → pipeline → paper trade → LINE) | ✅ ใช้งานได้ |
 | **Trade journal (SQLite)** — บันทึกสัญญาณ/ไม้ + กู้คืนเมื่อรีสตาร์ต | ✅ ใช้งานได้ |
-| News, Postgres, AI context | 🟡 AI ต่อแล้ว (fail-open) · News/Postgres ยัง scaffold |
+| **Supabase/Postgres** — สลับจาก SQLite ด้วย `DATABASE_URL` | ✅ ใช้งานได้ ([คู่มือ](docs/supabase-setup.md)) |
+| News, AI context | 🟡 AI ต่อแล้ว (fail-open) · News ยัง scaffold |
 | Dashboard | ⬜ ยังไม่เริ่ม |
 
 ---

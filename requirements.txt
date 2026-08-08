@@ -5,7 +5,7 @@
 websockets>=12.0          # exchange WebSocket streams
 aiohttp>=3.9              # REST gap-recovery + HTTP news fetch
 anthropic>=0.40           # Claude AI context service
-asyncpg>=0.29             # PostgreSQL (Supabase/Neon)
+psycopg[binary]>=3.2      # PostgreSQL/Supabase (ใช้เมื่อตั้ง DATABASE_URL)
 redis>=5.0                # queue / cache (Upstash)
 python-dotenv>=1.0        # load .env
 pydantic>=2.6             # config + structured-output validation

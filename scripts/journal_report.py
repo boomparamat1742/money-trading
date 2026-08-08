@@ -10,7 +10,7 @@ import os
 import sys
 import time
 
-from worker.app.journal import Journal
+from worker.app.store import backend_name, open_journal
 
 
 def main(argv: list[str]) -> None:
@@ -19,16 +19,17 @@ def main(argv: list[str]) -> None:
     except Exception:
         pass
 
-    path = os.environ.get("JOURNAL_DB", "data/journal.db")
-    if not os.path.exists(path):
-        print(f"ยังไม่มี journal ที่ {path}")
-        print("รันระบบก่อน:  python -m worker.app.main")
-        return
     limit = int(argv[1]) if len(argv) > 1 else 20
-    j = Journal(path)
+    if backend_name() == "sqlite":
+        path = os.environ.get("JOURNAL_DB", "data/journal.db")
+        if not os.path.exists(path):
+            print(f"ยังไม่มี journal ที่ {path}")
+            print("รันระบบก่อน:  python -m worker.app.main")
+            return
+    j = open_journal()
     s = j.stats()
 
-    print(f"\n📓 Trade Journal — {path}\n")
+    print(f"\n📓 Trade Journal — {j.path}\n")
     print(f"  สัญญาณที่บันทึก : {s['signals']}")
     print(f"  ไม้ที่ปิดแล้ว    : {s['trades_closed']}   (เปิดค้าง {s['trades_open']})")
     if s["trades_closed"]:

@@ -24,7 +24,7 @@ from typing import Optional
 
 from .evaluate import evaluate, format_evaluation
 from .hypotheses import REGISTRY
-from .registry import Registry
+from worker.app.store import open_registry
 
 STABILITY_WINDOW = 5      # ดูผลย้อนหลังกี่ครั้งเมื่อประเมินความน่าเชื่อถือ
 DATA_MAX_AGE_H = 12.0     # ข้อมูลเก่ากว่านี้ให้ดึงใหม่
@@ -39,7 +39,7 @@ def _notifier():
     return ConsoleNotifier()
 
 
-def run_once(reg: Registry, only: Optional[str] = None,
+def run_once(reg, only: Optional[str] = None,
              notify: bool = False, verbose: bool = True) -> list:
     names = [only] if only and only in REGISTRY else list(REGISTRY)
     results = []
@@ -119,7 +119,7 @@ def main(argv: list[str]) -> None:
         i = argv.index("--only")
         only = argv[i + 1] if len(argv) > i + 1 else None
 
-    reg = Registry()
+    reg = open_registry()
     try:
         while True:
             stamp = time.strftime("%Y-%m-%d %H:%M", time.localtime())

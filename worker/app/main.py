@@ -18,7 +18,7 @@ from .ai_context import get_context
 from .config import load_settings
 from .data_quality import DataQualityChecker
 from .htf import MultiTimeframeTrend
-from .journal import Journal
+from .store import open_journal
 from .market_data import BinanceSource
 from .models import Candle
 from .news import NewsService
@@ -172,9 +172,7 @@ async def run() -> None:
     notifier = build_notifier(s)
     portfolio = PortfolioState()
 
-    import os
-    journal = Journal(os.environ.get("JOURNAL_DB", "data/journal.db"))
-    print(f"[startup] journal: {journal.path}")
+    journal = open_journal()
 
     # per-symbol: own pipeline + htf + open_trades, warmed from history.
     # Open trades are restored from the journal so a restart resumes them.
