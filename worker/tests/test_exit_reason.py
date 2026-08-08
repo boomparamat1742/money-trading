@@ -186,6 +186,84 @@ def _journal():
     return Journal(os.path.join(tempfile.mkdtemp(), "j.db"))
 
 
+def _sig(reasons=("htf_aligned", "adx_trending"), score=86.03):
+    from worker.app.models import Signal
+    return Signal(
+        exchange="binance", symbol="ETHUSDT", timeframe="15m",
+        candle_open_time=0, strategy_name="trend_following",
+        strategy_version="1.1.0", direction=Direction.LONG, signal_score=score,
+        score_breakdown={}, market_regime={"regime": "uptrend"},
+        entry_price=100.0, stop_loss=98.0, take_profit=106.0, expected_rr=2.0,
+        risk_status="approved", rejection_reason=None, indicators={},
+        trigger_reasons=list(reasons), status="approved")
+
+
+def test_close_alert_identifies_which_position_and_why_it_was_opened():
+    from worker.app.paper_trading import entry_from_signal
+
+    broker = PaperBroker(FREE)
+    t = broker.open(_decision(), Direction.LONG, "ETHUSDT", None,
+                    _candle(100, 100, 100, 100, t=1_700_000_000_000),
+                    entry=entry_from_signal(_sig()))
+    t.db_id = 11
+    broker.update(t, _candle(100, 100.1, 97.0, 97.5, t=1_700_000_900_000))
+
+    msg = format_close(t)
+    assert "#11" in msg                       # ไม้ไหน
+    assert "trend_following" in msg           # สูตรที่ใช้เข้า
+    assert "v1.1.0" in msg and "86.03" in msg
+    assert "htf_aligned, adx_trending" in msg  # เงื่อนไขที่จุดชนวน
+    assert "uptrend" in msg
+
+
+def test_close_alert_still_works_without_entry_context():
+    """ไม้เก่าที่เปิดก่อนมีฟีเจอร์นี้ต้องไม่ทำให้แจ้งเตือนพัง"""
+    broker, t = _open()
+    broker.update(t, _candle(100, 100.1, 97.0, 97.5, t=1))
+    msg = format_close(t)
+    assert "ปิดสถานะ" in msg and "เข้าด้วย" not in msg
+
+
+def test_sl_by_trigger_groups_outcomes_per_entry_condition():
+    from worker.app.paper_trading import entry_from_signal
+
+    j = _journal()
+    broker = PaperBroker(FREE)
+
+    def run(reasons, win):
+        t = broker.open(_decision(), Direction.LONG, "ETHUSDT", None, _candle(100, 100, 100, 100),
+                        entry=entry_from_signal(_sig(reasons)))
+        j.open_trade(t)
+        bar = _candle(100, 107, 100, 106.5, t=1) if win else _candle(100, 100.1, 97, 97.5, t=1)
+        broker.update(t, bar)
+        j.close_trade(t)
+
+    run(("htf_aligned", "macd_positive"), win=False)
+    run(("htf_aligned", "macd_positive"), win=False)
+    run(("htf_aligned",), win=True)
+
+    by = {r["trigger"]: r for r in j.sl_by_trigger()}
+    assert by["macd_positive"]["n"] == 2 and by["macd_positive"]["sl_rate"] == 100.0
+    assert by["htf_aligned"]["n"] == 3 and by["htf_aligned"]["sl"] == 2
+    assert j.sl_by_trigger()[0]["trigger"] == "macd_positive"   # แย่สุดขึ้นก่อน
+    j.close()
+
+
+def test_entry_context_survives_restart():
+    from worker.app.paper_trading import entry_from_signal
+
+    j = _journal()
+    broker = PaperBroker(FREE)
+    t = broker.open(_decision(), Direction.LONG, "ETHUSDT", None, _candle(100, 100, 100, 100),
+                    entry=entry_from_signal(_sig()))
+    j.open_trade(t)
+
+    restored = j.load_open_trades("ETHUSDT")[0]
+    assert restored.entry_context["strategy"] == "trend_following"
+    assert restored.entry_context["reasons"] == ["htf_aligned", "adx_trending"]
+    j.close()
+
+
 def test_exit_reason_survives_a_round_trip_to_the_database():
     j = _journal()
     broker, t = _open()

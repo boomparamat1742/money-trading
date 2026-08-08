@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS trades (
     init_risk      DOUBLE PRECISION,
     initial_stop   DOUBLE PRECISION,        -- stop ตอนเข้า (trailing เขียนทับ stop_loss)
     extreme        DOUBLE PRECISION,
+    entry_context  JSONB,                   -- กลยุทธ์ คะแนน และเงื่อนไขที่จุดชนวนการเข้า
     exit_reason    TEXT,                    -- tp | sl_initial | sl_trailing | expired
     exit_context   JSONB,                   -- pattern, mfe_r, mae_r, สภาพตลาดตอนปิด
     opened_at      BIGINT,
@@ -76,7 +77,8 @@ CREATE TABLE IF NOT EXISTS trades (
 );
 
 -- ตารางที่สร้างไว้ก่อนหน้ายังไม่มี 3 คอลัมน์นี้ (โค้ดก็ ALTER เองตอนเชื่อมต่อ)
-ALTER TABLE trades ADD COLUMN IF NOT EXISTS initial_stop DOUBLE PRECISION;
+ALTER TABLE trades ADD COLUMN IF NOT EXISTS initial_stop  DOUBLE PRECISION;
+ALTER TABLE trades ADD COLUMN IF NOT EXISTS entry_context JSONB;
 ALTER TABLE trades ADD COLUMN IF NOT EXISTS exit_reason  TEXT;
 ALTER TABLE trades ADD COLUMN IF NOT EXISTS exit_context JSONB;
 

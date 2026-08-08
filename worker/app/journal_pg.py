@@ -38,6 +38,7 @@ class PostgresJournal:
         (migrations/supabase.sql มีให้ครบสำหรับตารางที่สร้างใหม่)"""
         with self.conn.cursor() as cur:
             for col, decl in (("initial_stop", "DOUBLE PRECISION"),
+                              ("entry_context", "JSONB"),
                               ("exit_reason", "TEXT"),
                               ("exit_context", "JSONB")):
                 cur.execute(f"ALTER TABLE trades ADD COLUMN IF NOT EXISTS {col} {decl}")
@@ -91,14 +92,16 @@ class PostgresJournal:
                    (signal_id, symbol, side, status, requested_entry, filled_entry,
                     stop_loss, take_profit, position_size, risk_amount, risk_pct,
                     entry_fee, exit_fee, slippage, mfe, mae, bars_held, init_risk,
-                    initial_stop, extreme, opened_at, created_at, updated_at)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    initial_stop, extreme, entry_context, opened_at, created_at, updated_at)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                    RETURNING id""",
                 (signal_id, t.symbol, t.side.value, t.status.value, t.requested_entry,
                  t.filled_entry, t.stop_loss, t.take_profit, t.position_size,
                  t.risk_amount, t.risk_pct, t.entry_fee, t.exit_fee, t.slippage,
                  t.max_favorable_excursion, t.max_adverse_excursion, t.bars_held,
-                 t.init_risk, t.initial_stop, t.extreme, t.opened_at, _now(), _now()))
+                 t.init_risk, t.initial_stop, t.extreme,
+                 json.dumps(t.entry_context, ensure_ascii=False) if t.entry_context else None,
+                 t.opened_at, _now(), _now()))
             t.db_id = cur.fetchone()[0]
             return t.db_id
 
@@ -123,7 +126,7 @@ class PostgresJournal:
         sql = ("SELECT id, signal_id, symbol, side, status, requested_entry, filled_entry,"
                " stop_loss, take_profit, position_size, risk_amount, risk_pct, entry_fee,"
                " exit_fee, slippage, mfe, mae, bars_held, init_risk, extreme, opened_at,"
-               " initial_stop"
+               " initial_stop, entry_context"
                " FROM trades WHERE status='open'")
         args: tuple = ()
         if symbol:
@@ -147,6 +150,7 @@ class PostgresJournal:
                 t.extreme = r[19] or 0.0
                 # แถวเก่ากว่า migration ไม่มีค่านี้ — เดาว่า stop ยังไม่เคยเลื่อน
                 t.initial_stop = r[21] if r[21] is not None else r[7]
+                t.entry_context = r[22] or {}      # JSONB → dict อยู่แล้ว
                 t.db_id = r[0]
                 out.append(t)
         return out
@@ -197,6 +201,27 @@ class PostgresJournal:
                     "avg_bars", "avg_mfe_r", "fast_stops"]
             return [{c: (float(v) if isinstance(v, Decimal) else v)
                      for c, v in zip(cols, r)} for r in cur.fetchall()]
+
+    def sl_by_trigger(self) -> list[dict[str, Any]]:
+        """เงื่อนไขที่จุดชนวนแต่ละตัว จบด้วย SL กี่ % — ให้ Postgres กาง array ให้
+        (ไม้หนึ่งมีหลายเงื่อนไข จึงนับซ้ำได้ ดูคำอธิบายใน journal.sl_by_trigger)"""
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """SELECT trigger, COUNT(*) AS n,
+                          COUNT(*) FILTER (WHERE exit_reason LIKE 'sl%') AS sl,
+                          ROUND(SUM(pnl_amount)::numeric, 4) AS net_pnl
+                   FROM trades,
+                        LATERAL jsonb_array_elements_text(
+                            COALESCE(entry_context->'reasons', '["(ไม่มีข้อมูล)"]'::jsonb)
+                        ) AS trigger
+                   WHERE status IN ('hit_tp','hit_sl','expired')
+                   GROUP BY trigger""")
+            out = []
+            for trigger, n, sl, pnl in cur.fetchall():
+                out.append({"trigger": trigger, "n": n, "sl": sl,
+                            "net_pnl": float(pnl) if pnl is not None else 0.0,
+                            "sl_rate": round(sl / n * 100, 1) if n else 0.0})
+        return sorted(out, key=lambda d: (-d["sl_rate"], -d["n"]))
 
     def recent_trades(self, limit: int = 20) -> list[dict]:
         with self.conn.cursor() as cur:

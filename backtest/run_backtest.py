@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from worker.app.config import Fees, RiskPolicy
 from worker.app.htf import MultiTimeframeTrend
 from worker.app.models import Candle, PaperTrade, TradeStatus
-from worker.app.paper_trading import PaperBroker
+from worker.app.paper_trading import PaperBroker, entry_from_signal
 from worker.app.pipeline import SignalPipeline
 from worker.app.risk import PortfolioState
 
@@ -74,7 +74,8 @@ def run(candles: list[Candle], policy: RiskPolicy, fees: Fees,
         sig = pipeline.process(c, portfolio, htf_trend=htf_trend)
         if sig and sig.status == "approved" and hasattr(sig, "_decision"):
             decision = sig._decision  # type: ignore[attr-defined]
-            t = broker.open(decision, sig.direction, c.symbol, None, c)
+            t = broker.open(decision, sig.direction, c.symbol, None, c,
+                            entry=entry_from_signal(sig))
             open_trades.append(t)
             all_trades.append(t)
             portfolio.open_trades += 1

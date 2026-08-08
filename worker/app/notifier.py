@@ -130,9 +130,32 @@ def format_close(t) -> str:
 
     lines = [f"{icon} [{t.symbol}] ปิดสถานะ {side} — {EXIT_REASON_TH.get(reason, reason)}"]
 
+    # ระบุว่าเป็นไม้ไหน — ให้ย้อนไปหาข้อความ "เปิด" ที่ตรงกันได้
+    ident = f"ไม้ #{t.db_id}" if t.db_id else "ไม้"
+    if t.opened_at:
+        import time
+        ident += " · เปิด " + time.strftime("%d/%m %H:%M", time.localtime(t.opened_at / 1000))
+    if t.filled_entry:
+        ident += f" ที่ {fmt_price(t.filled_entry)}"
+    lines.append(ident)
+
+    # เข้าไม้นี้เพราะอะไร — สูตร/เงื่อนไขที่จุดชนวน
+    ent = t.entry_context or {}
+    if ent.get("strategy"):
+        head = f"เข้าด้วย: {ent['strategy']}"
+        if ent.get("version"):
+            head += f" v{ent['version']}"
+        if ent.get("score") is not None:
+            head += f" · score {ent['score']}"
+        if ent.get("regime"):
+            head += f" · regime {ent['regime']}"
+        lines.append(head)
+    if ent.get("reasons"):
+        lines.append("  เงื่อนไขที่จุดชนวน: " + ", ".join(ent["reasons"]))
+
     pattern = ctx.get("pattern")
     if pattern in EXIT_PATTERN_TH:
-        lines.append(f"สาเหตุ: {EXIT_PATTERN_TH[pattern]}")
+        lines.append(f"สาเหตุที่ปิด: {EXIT_PATTERN_TH[pattern]}")
 
     lines.append(f"PnL: {t.pnl_amount}  (RR {t.actual_rr})")
 

@@ -68,6 +68,22 @@ def classify_exit(t: PaperTrade) -> tuple[str, str]:
     return "sl_initial", "stalled"
 
 
+def entry_from_signal(sig) -> dict:
+    """ย่อ Signal เหลือเฉพาะ "ทำไมถึงเข้าไม้นี้" เพื่อติดไปกับไม้
+
+    เก็บไว้กับไม้ ไม่ใช่ join เอาจากตาราง signals ทีหลัง เพราะ (ก) ข้อความแจ้งเตือน
+    ตอนปิดต้องใช้ค่านี้ทันที รวมถึงไม้ที่กู้คืนมาหลังรีสตาร์ท และ (ข) backtest
+    ไม่มีตาราง signals เลย
+    """
+    return {
+        "strategy": sig.strategy_name,
+        "version": sig.strategy_version,
+        "score": sig.signal_score,
+        "reasons": list(sig.trigger_reasons or []),
+        "regime": (sig.market_regime or {}).get("regime"),
+    }
+
+
 def attach_exit_market(t: PaperTrade, snap) -> None:
     """แนบสภาพตลาดตอนปิดเข้าไปใน exit_context (เรียกหลังอินดิเคเตอร์ของแท่งนั้น
     ถูกคำนวณแล้ว). เก็บเฉพาะตัวที่ใช้ตอบคำถามว่า "ตอนโดนตลาดเป็นยังไง" ไม่ต้องทั้งชุด."""
@@ -88,7 +104,8 @@ class PaperBroker:
         self.trail_r_dist = trail_r_dist
 
     def open(self, decision: RiskDecision, side: Direction, symbol: str,
-             signal_id: Optional[int], at: Candle) -> PaperTrade:
+             signal_id: Optional[int], at: Candle,
+             entry: Optional[dict] = None) -> PaperTrade:
         slip = self.fees.slippage_pct / 100
         filled = decision.entry_price * (1 + slip) if side == Direction.LONG else decision.entry_price * (1 - slip)
         notional = filled * decision.position_size
@@ -106,6 +123,7 @@ class PaperBroker:
         t.init_risk = abs(filled - decision.stop_loss)
         t.initial_stop = decision.stop_loss   # trailing เขียนทับ stop_loss — เก็บของเดิมไว้เทียบ
         t.extreme = filled
+        t.entry_context = dict(entry or {})
         return t
 
     def update(self, t: PaperTrade, candle: Candle) -> PaperTrade:

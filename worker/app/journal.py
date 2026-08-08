@@ -61,7 +61,7 @@ CREATE TABLE IF NOT EXISTS trades (
     exit_price REAL, pnl_amount REAL, pnl_pct REAL, actual_rr REAL,
     mfe REAL, mae REAL,
     bars_held INTEGER, init_risk REAL, initial_stop REAL, extreme REAL,
-    exit_reason TEXT, exit_context TEXT,
+    entry_context TEXT, exit_reason TEXT, exit_context TEXT,
     opened_at INTEGER, closed_at INTEGER,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
@@ -80,6 +80,7 @@ CREATE INDEX IF NOT EXISTS idx_signals_symbol_time ON signals(symbol, candle_ope
 # ฐานข้อมูลเก่าจึงต้อง ALTER เอง ไม่งั้น INSERT จะพัง
 ADDED_TRADE_COLUMNS = {
     "initial_stop": "REAL",
+    "entry_context": "TEXT",
     "exit_reason": "TEXT",
     "exit_context": "TEXT",
 }
@@ -154,13 +155,15 @@ class Journal:
                (signal_id, symbol, side, status, requested_entry, filled_entry,
                 stop_loss, take_profit, position_size, risk_amount, risk_pct,
                 entry_fee, exit_fee, slippage, mfe, mae, bars_held, init_risk,
-                initial_stop, extreme, opened_at, created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                initial_stop, extreme, entry_context, opened_at, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (signal_id, t.symbol, t.side.value, t.status.value, t.requested_entry,
              t.filled_entry, t.stop_loss, t.take_profit, t.position_size,
              t.risk_amount, t.risk_pct, t.entry_fee, t.exit_fee, t.slippage,
              t.max_favorable_excursion, t.max_adverse_excursion, t.bars_held,
-             t.init_risk, t.initial_stop, t.extreme, t.opened_at, _now(), _now()))
+             t.init_risk, t.initial_stop, t.extreme,
+             json.dumps(t.entry_context, ensure_ascii=False) if t.entry_context else None,
+             t.opened_at, _now(), _now()))
         self.conn.commit()
         t.db_id = cur.lastrowid
         return cur.lastrowid
@@ -209,6 +212,7 @@ class Journal:
             # เก่ากว่า migration จะไม่มีค่านี้ — เดาจาก stop ปัจจุบัน (ยังไม่เคยเลื่อน)
             t.initial_stop = r["initial_stop"] if r["initial_stop"] is not None else r["stop_loss"]
             t.extreme = r["extreme"] or 0.0
+            t.entry_context = json.loads(r["entry_context"]) if r["entry_context"] else {}
             t.db_id = r["id"]
             out.append(t)
         return out
@@ -271,6 +275,29 @@ class Journal:
                 "fast_stops": b["fast"],
             })
         return sorted(out, key=lambda d: -d["n"])
+
+    def sl_by_trigger(self) -> list[dict[str, Any]]:
+        """แต่ละเงื่อนไขที่จุดชนวนการเข้า จบด้วย SL กี่ครั้งจากกี่ครั้ง
+
+        ไม้หนึ่งมีหลายเงื่อนไขพร้อมกัน จึงนับเงื่อนไขละครั้ง (ไม่ใช่แบ่งส่วน) —
+        อ่านว่า "เมื่อเงื่อนไขนี้อยู่ในชุดที่จุดชนวน ผลออกมาเป็นยังไง" ไม่ใช่
+        "เงื่อนไขนี้ทำให้แพ้" เพราะแยกอิทธิพลของแต่ละตัวออกจากกันไม่ได้
+        """
+        rows = self.conn.execute(
+            """SELECT entry_context, exit_reason, pnl_amount
+               FROM trades WHERE status IN ('hit_tp','hit_sl','expired')""").fetchall()
+        agg: dict[str, dict[str, Any]] = {}
+        for r in rows:
+            ent = json.loads(r["entry_context"]) if r["entry_context"] else {}
+            is_sl = (r["exit_reason"] or "").startswith("sl")
+            for reason in ent.get("reasons") or ["(ไม่มีข้อมูล)"]:
+                b = agg.setdefault(reason, {"trigger": reason, "n": 0, "sl": 0, "pnl": 0.0})
+                b["n"] += 1
+                b["sl"] += 1 if is_sl else 0
+                b["pnl"] += r["pnl_amount"] or 0.0
+        out = [{**b, "sl_rate": round(b["sl"] / b["n"] * 100, 1),
+                "net_pnl": round(b["pnl"], 4)} for b in agg.values()]
+        return sorted(out, key=lambda d: (-d["sl_rate"], -d["n"]))
 
     def recent_trades(self, limit: int = 20) -> list[sqlite3.Row]:
         return list(self.conn.execute(

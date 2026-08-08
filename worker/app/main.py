@@ -24,7 +24,7 @@ from .models import Candle
 from .news import NewsService
 from .notifier import (ConsoleNotifier, DailyQuota, LineNotifier, TelegramNotifier,
                        format_close, format_signal)
-from .paper_trading import PaperBroker, attach_exit_market
+from .paper_trading import PaperBroker, attach_exit_market, entry_from_signal
 from .pipeline import SignalPipeline
 from .risk import PortfolioState
 
@@ -133,7 +133,8 @@ async def run_symbol(symbol, s, pipeline, htf, last_warm, broker, quality,
 
         signal_id = journal.record_signal(sig) if journal else None
         decision = sig._decision  # type: ignore[attr-defined]
-        trade = broker.open(decision, sig.direction, symbol, None, candle)
+        trade = broker.open(decision, sig.direction, symbol, None, candle,
+                            entry=entry_from_signal(sig))
         if journal:
             journal.open_trade(trade, signal_id)
         open_trades.append(trade)

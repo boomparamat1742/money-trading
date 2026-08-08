@@ -177,4 +177,7 @@ class PaperTrade:
     # completely different events, and only one of them is a problem to fix.
     exit_reason: Optional[str] = None      # tp | sl_initial | sl_trailing | expired
     exit_context: dict[str, Any] = field(default_factory=dict)
+    # ทำไมถึงเข้าไม้นี้ — กลยุทธ์ คะแนน และเงื่อนไขที่จุดชนวน เก็บคู่กับ exit_context
+    # เพื่อให้ตอบได้ว่า "เงื่อนไขแบบไหนพาไปโดน SL บ่อยสุด" จากไม้เดียวไม่ต้อง join
+    entry_context: dict[str, Any] = field(default_factory=dict)
     db_id: Optional[int] = None   # journal row id (set once persisted)
