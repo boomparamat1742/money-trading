@@ -41,7 +41,11 @@ def _notifier():
 
 def run_once(reg, only: Optional[str] = None,
              notify: bool = False, verbose: bool = True) -> list:
-    names = [only] if only and only in REGISTRY else list(REGISTRY)
+    # ชื่อที่พิมพ์ผิดต้องหยุด ไม่ใช่เงียบแล้วรันทั้งแล็บ — ทุกครั้งที่รันคือ 1 trial
+    # ที่ถูกนับใน multiple-testing correction การรันเกินโดยไม่ตั้งใจทำให้เกณฑ์เพี้ยน
+    if only and only not in REGISTRY:
+        raise SystemExit(f"ไม่รู้จักสมมติฐาน {only!r} — มีให้เลือก: {', '.join(REGISTRY)}")
+    names = [only] if only else list(REGISTRY)
     results = []
     for name in names:
         h = REGISTRY[name]()

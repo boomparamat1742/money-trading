@@ -80,8 +80,8 @@ def format_signal(sig: Signal, ai_note: Optional[str] = None) -> str:
     if sig.entry_price is not None:
         lines += [
             f"ราคาอ้างอิง: {fmt_price(sig.entry_price)}",
-            f"ระดับ SL (อ้างอิง): {fmt_price(sig.stop_loss)}",
             f"ระดับ TP (อ้างอิง): {fmt_price(sig.take_profit)}",
+            f"ระดับ SL (อ้างอิง): {fmt_price(sig.stop_loss)}",
             f"R:R: {sig.expected_rr}",
         ]
         lev = suggest_leverage(sig.entry_price, sig.stop_loss)
