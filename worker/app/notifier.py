@@ -103,6 +103,44 @@ def format_signal(sig: Signal, ai_note: Optional[str] = None) -> str:
     return "\n".join(lines)
 
 
+def format_close(t) -> str:
+    """ข้อความปิดสถานะ — ต้องบอก *สาเหตุ* ไม่ใช่แค่สถานะ.
+
+    "hit_sl" อย่างเดียวตอบไม่ได้ว่าควรแก้อะไร: โดน trailing stop หลังกำไร 2R
+    กับโดน SL เดิมโดยราคาไม่เคยขยับไปทางเราเลย เป็นคนละเรื่องกันสิ้นเชิง
+    """
+    from .paper_trading import EXIT_PATTERN_TH, EXIT_REASON_TH
+
+    ctx = t.exit_context or {}
+    reason = t.exit_reason or (t.status.value if hasattr(t.status, "value") else str(t.status))
+    icon = {"tp": "🟢", "sl_trailing": "🟡", "sl_initial": "🔴"}.get(reason, "⚪")
+    side = t.side.value.upper() if hasattr(t.side, "value") else str(t.side).upper()
+
+    lines = [f"{icon} [{t.symbol}] ปิดสถานะ {side} — {EXIT_REASON_TH.get(reason, reason)}"]
+
+    pattern = ctx.get("pattern")
+    if pattern in EXIT_PATTERN_TH:
+        lines.append(f"สาเหตุ: {EXIT_PATTERN_TH[pattern]}")
+
+    lines.append(f"PnL: {t.pnl_amount}  (RR {t.actual_rr})")
+
+    mfe, mae = ctx.get("mfe_r"), ctx.get("mae_r")
+    if mfe is not None and mae is not None:
+        lines.append(f"ระหว่างถือ: กำไรสูงสุด +{mfe:.2f}R · ขาดทุนสูงสุด {mae:.2f}R")
+
+    bars = ctx.get("bars_held")
+    if bars is not None:
+        note = " ⚠️ โดนเร็วมาก" if ctx.get("fast_stop") else ""
+        lines.append(f"ถือไว้ {bars} แท่ง{note}")
+
+    if ctx.get("stop_moved"):
+        lines.append(f"SL ถูกเลื่อนจาก {ctx.get('initial_stop'):,.8g} "
+                     f"→ {ctx.get('final_stop'):,.8g}")
+
+    lines.append("บันทึกลง journal แล้ว (ใช้วิเคราะห์ย้อนหลังได้)")
+    return "\n".join(lines)
+
+
 class Notifier:
     async def send(self, text: str) -> bool:  # pragma: no cover - interface
         raise NotImplementedError

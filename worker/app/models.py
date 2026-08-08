@@ -170,5 +170,11 @@ class PaperTrade:
     # dict — CPython reuses id() after GC, and such dicts never get cleaned up)
     bars_held: int = 0
     init_risk: float = 0.0        # R in price terms, fixed at entry
+    initial_stop: float = 0.0     # stop at entry — trailing overwrites stop_loss
     extreme: float = 0.0          # best price seen since entry (for trailing)
+    # why the trade ended. `status` says WHAT happened (hit_sl); these say WHY —
+    # a trailing-stop exit and a thesis-was-wrong exit are both "hit_sl" but are
+    # completely different events, and only one of them is a problem to fix.
+    exit_reason: Optional[str] = None      # tp | sl_initial | sl_trailing | expired
+    exit_context: dict[str, Any] = field(default_factory=dict)
     db_id: Optional[int] = None   # journal row id (set once persisted)

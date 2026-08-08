@@ -23,8 +23,8 @@ from .market_data import BinanceSource
 from .models import Candle
 from .news import NewsService
 from .notifier import (ConsoleNotifier, DailyQuota, LineNotifier, TelegramNotifier,
-                       format_signal)
-from .paper_trading import PaperBroker
+                       format_close, format_signal)
+from .paper_trading import PaperBroker, attach_exit_market
 from .pipeline import SignalPipeline
 from .risk import PortfolioState
 
@@ -91,22 +91,32 @@ async def run_symbol(symbol, s, pipeline, htf, last_warm, broker, quality,
         # without this the system locks up permanently after a losing streak)
         portfolio.roll_day(candle.open_time)
 
-        # settle open paper trades on the new bar
+        # settle open paper trades on the new bar. Freeing the risk slot happens
+        # here so a signal on this same bar can use it; the journal write and the
+        # alert wait until the indicators for this candle exist, so the closed
+        # trade can carry the market conditions it died in.
+        closed_now = []
         for t in list(open_trades):
             broker.update(t, candle)
-            if journal:
-                journal.update_trade(t)   # persist trailing stop / bars held
             if t.status.value != "open":
                 open_trades.remove(t)
                 portfolio.open_trades -= 1
                 portfolio.open_risk_pct -= t.risk_pct
-                await notifier.send(
-                    f"[{t.symbol}] ปิดสถานะ {t.side.value.upper()} — {t.status.value}\n"
-                    f"PnL: {t.pnl_amount}  (RR {t.actual_rr})"
-                )
+                closed_now.append(t)
+            elif journal:
+                journal.update_trade(t)   # persist trailing stop / bars held
 
         htf_trend = htf.update(candle)
         sig = pipeline.process(candle, portfolio, htf_trend=htf_trend)
+
+        for t in closed_now:
+            attach_exit_market(t, pipeline.last_snapshot)
+            if journal:
+                journal.close_trade(t)
+            print(f"[close] {t.symbol} {t.exit_reason} "
+                  f"({t.exit_context.get('pattern')}) pnl={t.pnl_amount}")
+            await notifier.send(format_close(t))
+
         if not sig or sig.status != "approved":
             continue
 

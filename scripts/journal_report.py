@@ -44,6 +44,26 @@ def main(argv: list[str]) -> None:
     else:
         print("  (ยังไม่มีไม้ปิด — รอสัญญาณและผลลัพธ์ก่อน)")
 
+    reasons = j.exit_reasons()
+    if reasons:
+        print("\n  ปิดด้วยสาเหตุอะไรบ้าง (เรียงตามจำนวน):")
+        print(f"  {'สาเหตุ':<14}{'รูปแบบ':<15}{'ไม้':>5}{'PnL รวม':>12}{'RR เฉลี่ย':>10}"
+              f"{'แท่ง':>7}{'MFE(R)':>9}")
+        for r in reasons:
+            rr = "-" if r["avg_rr"] is None else f"{r['avg_rr']:.2f}"
+            bars = "-" if r["avg_bars"] is None else f"{r['avg_bars']:.1f}"
+            mfe = "-" if r["avg_mfe_r"] is None else f"{r['avg_mfe_r']:.2f}"
+            print(f"  {str(r['exit_reason'] or '-'):<14}{str(r['pattern'] or '-'):<15}"
+                  f"{r['n']:>5}{r['net_pnl']:>12.4f}{rr:>10}{bars:>7}{mfe:>9}")
+        print("\n  อ่านยังไง:")
+        print("    never_worked มาก → ปัญหาอยู่ที่จังหวะเข้า/ฟิลเตอร์ (เข้าผิดตั้งแต่แรก)")
+        print("    gave_back มาก    → ปัญหาอยู่ที่จุดออก (เคยกำไรแล้วคืนหมด)")
+        print("    trail_locked มาก → trailing ทำงานดี แต่อาจแคบไป ลองขยับดู")
+        print("    timeout มาก      → TP ไกลเกินไป หรือเข้าตอนตลาดนิ่ง")
+        fast = sum(r["fast_stops"] for r in reasons)
+        if fast:
+            print(f"    ⚠️ โดน SL ภายใน 2 แท่ง {fast} ไม้ — สัญญาณอาจมาช้ากว่าตลาด")
+
     rows = j.recent_trades(limit)
     if rows:
         print(f"\n  {limit} ไม้ล่าสุด:")

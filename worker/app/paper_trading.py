@@ -15,6 +15,70 @@ from .config import Fees
 from .models import Candle, Direction, PaperTrade, RiskDecision, TradeStatus
 
 
+# สาเหตุการปิด (machine-readable) → คำอธิบายไทยสำหรับแจ้งเตือน
+EXIT_REASON_TH = {
+    "tp": "ถึงเป้า TP",
+    "sl_initial": "โดน SL เดิม (จุดที่ตั้งไว้ตอนเข้า)",
+    "sl_trailing": "โดน trailing stop (SL ถูกเลื่อนตามกำไรแล้ว)",
+    "expired": "ครบเวลาถือสูงสุด — ปิดที่ราคาตลาด",
+}
+
+# รูปแบบของไม้ที่โดน SL — ตัวนี้แหละที่เอาไปวิเคราะห์ต่อ เพราะแต่ละแบบ
+# ชี้ไปที่ปัญหาคนละจุด และต้องแก้คนละทาง
+EXIT_PATTERN_TH = {
+    "never_worked": "ราคาแทบไม่วิ่งไปทางเราเลย → ปัญหาอยู่ที่จังหวะเข้า/ฟิลเตอร์",
+    "stalled":      "วิ่งไปได้บ้างแต่ไม่ถึง 1R แล้วย้อนกลับ → สัญญาณอ่อน หรือ SL แคบไป",
+    "gave_back":    "เคยกำไรเกิน 1R แล้วคืนหมด → ปัญหาอยู่ที่การบริหารจุดออก",
+    "trail_locked": "trailing stop ทำงานตามหน้าที่ ล็อกส่วนที่ได้ไว้",
+    "target_hit":   "ไปถึงเป้าตามแผน",
+    "timeout":      "ไม่ถึงทั้ง TP และ SL จนหมดเวลา → ตลาดนิ่ง หรือเป้าไกลไป",
+}
+
+FAST_STOP_BARS = 2      # โดนภายในกี่แท่งถึงเรียกว่า "เข้าผิดจังหวะทันที"
+GAVE_BACK_R = 1.0       # เคยกำไรถึงกี่ R ถึงนับว่า "คืนกำไร"
+NEVER_WORKED_R = 0.25   # กำไรสูงสุดต่ำกว่ากี่ R ถึงนับว่า "ไม่เคยไปทางเรา"
+
+
+def classify_exit(t: PaperTrade) -> tuple[str, str]:
+    """แยกสาเหตุการปิดเป็น (reason, pattern).
+
+    เหตุผลที่ต้องแยก `sl_initial` ออกจาก `sl_trailing`: ทั้งคู่ status เป็น
+    hit_sl เหมือนกัน แต่ตัวหลังคือระบบล็อกกำไรได้สำเร็จ ส่วนตัวแรกคือสมมติฐาน
+    ผิด — ถ้านับรวมกัน สถิติ "แพ้" จะบวมเกินจริงจนวิเคราะห์อะไรไม่ได้
+    """
+    R = t.init_risk or 0.0
+    mfe_r = (t.max_favorable_excursion / R) if R else 0.0
+
+    if t.status == TradeStatus.HIT_TP:
+        return "tp", "target_hit"
+    if t.status == TradeStatus.EXPIRED:
+        return "expired", "timeout"
+    if t.status != TradeStatus.HIT_SL:
+        return t.status.value, "n/a"
+
+    # SL: stop ถูกเลื่อนไปแล้วหรือยัง (LONG เลื่อนขึ้น / SHORT เลื่อนลง)
+    moved = (t.stop_loss > t.initial_stop if t.side == Direction.LONG
+             else t.stop_loss < t.initial_stop)
+    if moved:
+        return "sl_trailing", "trail_locked"
+    if mfe_r >= GAVE_BACK_R:
+        return "sl_initial", "gave_back"
+    if mfe_r < NEVER_WORKED_R:
+        return "sl_initial", "never_worked"
+    return "sl_initial", "stalled"
+
+
+def attach_exit_market(t: PaperTrade, snap) -> None:
+    """แนบสภาพตลาดตอนปิดเข้าไปใน exit_context (เรียกหลังอินดิเคเตอร์ของแท่งนั้น
+    ถูกคำนวณแล้ว). เก็บเฉพาะตัวที่ใช้ตอบคำถามว่า "ตอนโดนตลาดเป็นยังไง" ไม่ต้องทั้งชุด."""
+    if not t.exit_context or snap is None:
+        return
+    keys = ("adx", "rsi", "atr", "atr_percentile", "ema20", "ema50", "ema200",
+            "vwap", "vwap_dist_pct", "vol_ratio")
+    t.exit_context["market"] = {k: round(snap.values[k], 6)
+                                for k in keys if k in snap.values}
+
+
 class PaperBroker:
     def __init__(self, fees: Fees, max_holding_bars: int = 96,
                  trail_r_activate: Optional[float] = None, trail_r_dist: float = 1.0):
@@ -40,6 +104,7 @@ class PaperBroker:
         )
         t.bars_held = 0
         t.init_risk = abs(filled - decision.stop_loss)
+        t.initial_stop = decision.stop_loss   # trailing เขียนทับ stop_loss — เก็บของเดิมไว้เทียบ
         t.extreme = filled
         return t
 
@@ -101,3 +166,22 @@ class PaperBroker:
         t.actual_rr = round((abs(exit_px - t.filled_entry) / risk_per_unit) * (1 if t.pnl_amount >= 0 else -1), 3) if risk_per_unit else 0.0
         t.status = status
         t.closed_at = candle.open_time
+
+        # บันทึกสาเหตุ + หลักฐานรอบตัวไว้ให้วิเคราะห์ย้อนหลัง (ตอนปิดเท่านั้นที่รู้ครบ)
+        reason, pattern = classify_exit(t)
+        R = t.init_risk or 0.0
+        t.exit_reason = reason
+        t.exit_context = {
+            "pattern": pattern,
+            "mfe_r": round(t.max_favorable_excursion / R, 3) if R else None,
+            "mae_r": round(t.max_adverse_excursion / R, 3) if R else None,
+            "bars_held": t.bars_held,
+            # "เข้าผิดจังหวะ" = ตายเร็ว *และ* ไม่เคยไปทางเราเลย ไม้ที่วิ่งไป 1.5R
+            # ใน 2 แท่งแล้วค่อยโดน ไม่ใช่ปัญหาจังหวะเข้า
+            "fast_stop": pattern == "never_worked" and t.bars_held <= FAST_STOP_BARS,
+            "stop_moved": round(t.stop_loss - t.initial_stop, 8) != 0,
+            "initial_stop": t.initial_stop,
+            "final_stop": t.stop_loss,
+            "exit_candle": {"o": candle.open, "h": candle.high,
+                            "l": candle.low, "c": candle.close, "v": candle.volume},
+        }

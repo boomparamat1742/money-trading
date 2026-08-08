@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any, Optional
 
 from .models import Direction, PaperTrade, Signal, TradeStatus
@@ -30,6 +31,16 @@ class PostgresJournal:
         self.dsn = dsn
         self.path = _redact(dsn)          # ชื่อเดียวกับ SQLite journal (.path) ใช้โชว์ได้
         self.conn = psycopg.connect(dsn, autocommit=True)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """คอลัมน์ที่เพิ่มทีหลัง — ฐานข้อมูลที่ deploy ไปแล้วยังไม่มี
+        (migrations/supabase.sql มีให้ครบสำหรับตารางที่สร้างใหม่)"""
+        with self.conn.cursor() as cur:
+            for col, decl in (("initial_stop", "DOUBLE PRECISION"),
+                              ("exit_reason", "TEXT"),
+                              ("exit_context", "JSONB")):
+                cur.execute(f"ALTER TABLE trades ADD COLUMN IF NOT EXISTS {col} {decl}")
 
     # ---------- signals ----------
     def record_signal(self, sig: Signal) -> Optional[int]:
@@ -80,14 +91,14 @@ class PostgresJournal:
                    (signal_id, symbol, side, status, requested_entry, filled_entry,
                     stop_loss, take_profit, position_size, risk_amount, risk_pct,
                     entry_fee, exit_fee, slippage, mfe, mae, bars_held, init_risk,
-                    extreme, opened_at, created_at, updated_at)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    initial_stop, extreme, opened_at, created_at, updated_at)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                    RETURNING id""",
                 (signal_id, t.symbol, t.side.value, t.status.value, t.requested_entry,
                  t.filled_entry, t.stop_loss, t.take_profit, t.position_size,
                  t.risk_amount, t.risk_pct, t.entry_fee, t.exit_fee, t.slippage,
                  t.max_favorable_excursion, t.max_adverse_excursion, t.bars_held,
-                 t.init_risk, t.extreme, t.opened_at, _now(), _now()))
+                 t.init_risk, t.initial_stop, t.extreme, t.opened_at, _now(), _now()))
             t.db_id = cur.fetchone()[0]
             return t.db_id
 
@@ -98,18 +109,21 @@ class PostgresJournal:
             cur.execute(
                 """UPDATE trades SET status=%s, stop_loss=%s, exit_price=%s, exit_fee=%s,
                    pnl_amount=%s, pnl_pct=%s, actual_rr=%s, mfe=%s, mae=%s, bars_held=%s,
-                   extreme=%s, closed_at=%s, updated_at=%s WHERE id=%s""",
+                   extreme=%s, exit_reason=%s, exit_context=%s, closed_at=%s,
+                   updated_at=%s WHERE id=%s""",
                 (t.status.value, t.stop_loss, t.exit_price, t.exit_fee, t.pnl_amount,
                  t.pnl_pct, t.actual_rr, t.max_favorable_excursion,
-                 t.max_adverse_excursion, t.bars_held, t.extreme, t.closed_at,
-                 _now(), t.db_id))
+                 t.max_adverse_excursion, t.bars_held, t.extreme, t.exit_reason,
+                 json.dumps(t.exit_context, ensure_ascii=False) if t.exit_context else None,
+                 t.closed_at, _now(), t.db_id))
 
     close_trade = update_trade
 
     def load_open_trades(self, symbol: Optional[str] = None) -> list[PaperTrade]:
         sql = ("SELECT id, signal_id, symbol, side, status, requested_entry, filled_entry,"
                " stop_loss, take_profit, position_size, risk_amount, risk_pct, entry_fee,"
-               " exit_fee, slippage, mfe, mae, bars_held, init_risk, extreme, opened_at"
+               " exit_fee, slippage, mfe, mae, bars_held, init_risk, extreme, opened_at,"
+               " initial_stop"
                " FROM trades WHERE status='open'")
         args: tuple = ()
         if symbol:
@@ -131,6 +145,8 @@ class PostgresJournal:
                 t.bars_held = r[17] or 0
                 t.init_risk = r[18] or 0.0
                 t.extreme = r[19] or 0.0
+                # แถวเก่ากว่า migration ไม่มีค่านี้ — เดาว่า stop ยังไม่เคยเลื่อน
+                t.initial_stop = r[21] if r[21] is not None else r[7]
                 t.db_id = r[0]
                 out.append(t)
         return out
@@ -160,6 +176,27 @@ class PostgresJournal:
             "avg_win": round(sum(wins) / len(wins), 4) if wins else 0.0,
             "avg_loss": round(sum(losses) / len(losses), 4) if losses else 0.0,
         }
+
+    def exit_reasons(self) -> list[dict[str, Any]]:
+        """จัดกลุ่มไม้ที่ปิดแล้วตาม (สาเหตุ, รูปแบบ) — ให้ Postgres รวมให้เลย
+        เพราะ exit_context เป็น JSONB ดึงคีย์ย่อยได้ตรงๆ"""
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """SELECT exit_reason,
+                          exit_context->>'pattern'                AS pattern,
+                          COUNT(*)                                AS n,
+                          ROUND(SUM(pnl_amount)::numeric, 4)      AS net_pnl,
+                          ROUND(AVG(actual_rr)::numeric, 3)       AS avg_rr,
+                          ROUND(AVG(bars_held)::numeric, 1)       AS avg_bars,
+                          ROUND(AVG((exit_context->>'mfe_r')::numeric), 3) AS avg_mfe_r,
+                          COUNT(*) FILTER (WHERE exit_context->>'fast_stop' = 'true') AS fast_stops
+                   FROM trades
+                   WHERE status IN ('hit_tp','hit_sl','expired')
+                   GROUP BY 1, 2 ORDER BY n DESC""")
+            cols = ["exit_reason", "pattern", "n", "net_pnl", "avg_rr",
+                    "avg_bars", "avg_mfe_r", "fast_stops"]
+            return [{c: (float(v) if isinstance(v, Decimal) else v)
+                     for c, v in zip(cols, r)} for r in cur.fetchall()]
 
     def recent_trades(self, limit: int = 20) -> list[dict]:
         with self.conn.cursor() as cur:

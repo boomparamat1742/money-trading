@@ -65,15 +65,24 @@ CREATE TABLE IF NOT EXISTS trades (
     mae            DOUBLE PRECISION,
     bars_held      INTEGER,
     init_risk      DOUBLE PRECISION,
+    initial_stop   DOUBLE PRECISION,        -- stop ตอนเข้า (trailing เขียนทับ stop_loss)
     extreme        DOUBLE PRECISION,
+    exit_reason    TEXT,                    -- tp | sl_initial | sl_trailing | expired
+    exit_context   JSONB,                   -- pattern, mfe_r, mae_r, สภาพตลาดตอนปิด
     opened_at      BIGINT,
     closed_at      BIGINT,
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- ตารางที่สร้างไว้ก่อนหน้ายังไม่มี 3 คอลัมน์นี้ (โค้ดก็ ALTER เองตอนเชื่อมต่อ)
+ALTER TABLE trades ADD COLUMN IF NOT EXISTS initial_stop DOUBLE PRECISION;
+ALTER TABLE trades ADD COLUMN IF NOT EXISTS exit_reason  TEXT;
+ALTER TABLE trades ADD COLUMN IF NOT EXISTS exit_context JSONB;
+
 CREATE INDEX IF NOT EXISTS idx_trades_status ON trades(status);
 CREATE INDEX IF NOT EXISTS idx_trades_symbol ON trades(symbol);
+CREATE INDEX IF NOT EXISTS idx_trades_exit_reason ON trades(exit_reason);
 CREATE INDEX IF NOT EXISTS idx_signals_symbol_time ON signals(symbol, candle_open_time DESC);
 
 -- ══════════════════════════════════════════════════════════════

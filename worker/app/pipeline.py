@@ -44,6 +44,9 @@ class SignalPipeline:
         self.sl_mult = sl_mult
         self.tp_mult = tp_mult
         self.ind = IndicatorEngine()
+        # last computed snapshot, kept even when no signal fires — callers use it
+        # to record the market conditions a trade exited in (design §7 journal)
+        self.last_snapshot: Optional[IndicatorSnapshot] = None
 
     def candidate(self, candle: Candle, htf_trend: int = 0) -> Optional[Candidate]:
         """Indicators → regime → strategy → score. No risk, no threshold.
@@ -51,6 +54,7 @@ class SignalPipeline:
         if not candle.is_closed:
             return None
         snap = self.ind.update(candle)
+        self.last_snapshot = snap
         if not snap.ready:
             return None
         regime = detect_regime(snap)
