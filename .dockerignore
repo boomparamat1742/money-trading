@@ -1,0 +1,14 @@
+# ข้อมูล/ความลับ — ต้องไม่เข้า image
+.env
+data/
+
+# ไม่จำเป็นตอนรัน
+.git/
+.claude/
+__pycache__/
+*.pyc
+.pytest_cache/
+worker/tests/
+docs/
+*.md
+*.docx

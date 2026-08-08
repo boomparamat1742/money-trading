@@ -1,18 +1,10 @@
-# --- Core quant engine + backtest run on the Python standard library only ---
-# (no install needed to run backtests or tests)
+# Runtime dependencies (ที่โค้ดใช้จริง — ตรวจแล้วด้วยการสแกน import)
+#
+# หมายเหตุ: quant core + backtest + Edge Lab ใช้ Python standard library ล้วน
+# รายการข้างล่างจำเป็นเฉพาะ live layer และการต่อฐานข้อมูล
 
-# --- Live / production layer (install when building Phase 1 data pipeline) ---
-websockets>=12.0          # exchange WebSocket streams
-aiohttp>=3.9              # REST gap-recovery + HTTP news fetch
-anthropic>=0.40           # Claude AI context service
-psycopg[binary]>=3.2      # PostgreSQL/Supabase (ใช้เมื่อตั้ง DATABASE_URL)
-redis>=5.0                # queue / cache (Upstash)
-python-dotenv>=1.0        # load .env
-pydantic>=2.6             # config + structured-output validation
-
-# --- Optional acceleration (core falls back to pure Python if absent) ---
-# numpy>=1.26
-# pandas>=2.2
-
-# --- Dev / test ---
-pytest>=8.0
+websockets>=12.0          # Binance WebSocket stream
+aiohttp>=3.9              # REST gap-recovery + LINE/Telegram push
+anthropic>=0.40           # Claude AI context (slow path, ปิดได้)
+psycopg[binary]>=3.2      # Supabase/PostgreSQL (ใช้เมื่อตั้ง DATABASE_URL)
+python-dotenv>=1.0        # โหลด .env

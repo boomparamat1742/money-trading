@@ -35,7 +35,7 @@ cross-sectional, funding carry)
 | **Walk-forward** (จูนพารามิเตอร์บน train → validate OOS หลาย fold) | ✅ ใช้งานได้ |
 | **Research track** (`research/`: momentum, xsmom, funding_carry) | ✅ ใช้งานได้ |
 | **Data fetcher** (klines + funding จาก Binance public API) | ✅ ใช้งานได้ |
-| **Tests** (pytest, 58 ผ่าน) | ✅ |
+| **Tests** (pytest, 59 ผ่าน) | ✅ |
 | Data quality / candle builder | ✅ |
 | **Live data (Binance WebSocket + gap recovery)** | ✅ ใช้งานได้ (ทดสอบเชื่อมต่อจริงแล้ว) |
 | **LINE Messaging API แจ้งเตือน** | ✅ ใช้งานได้ (ต้องใส่ token เอง) |
@@ -147,7 +147,7 @@ python -m scripts.journal_report
 - ทุกสัญญาณ/ไม้ถูกบันทึกลง `data/journal.db` · รีสตาร์ทแล้วไม้ที่เปิดค้างกลับมาเอง
 - จำกัดข้อความ LINE ด้วย `NOTIFY_MAX_PER_DAY` (default 20/วัน)
 - auto-reconnect + gap recovery เมื่อเน็ตหลุด
-- deploy บน Railway ได้ด้วย `worker/Dockerfile`
+- deploy บน Railway ได้ ([คู่มือ](docs/railway-deploy.md)) — ~$5/เดือน
 
 > LINE Notify ถูกปิดแล้ว — ระบบนี้ใช้ **Messaging API (push)** ซึ่งต้องมี channel + destination id
 
