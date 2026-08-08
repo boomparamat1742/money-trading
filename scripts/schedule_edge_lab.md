@@ -11,9 +11,16 @@
 $action  = New-ScheduledTaskAction -Execute "python" `
            -Argument "-m research.lab.watch --notify" -WorkingDirectory "D:\money-project"
 $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday -At 9am
+# StartWhenAvailable: ถ้าคอมปิดอยู่ตอนถึงเวลา ให้รันชดเชยเมื่อเปิดเครื่อง
+# ไม่ใส่ตัวนี้ = รอบนั้นหายไปเลย ซึ่งเป็นจุดอ่อนเดียวของการรันในเครื่องตัวเอง
+$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable `
+           -DontStopIfGoingOnBatteries -AllowStartIfOnBatteries
 Register-ScheduledTask -TaskName "EdgeLab" -Action $action -Trigger $trigger `
-           -Description "รัน Edge Lab เก็บผลรายสัปดาห์"
+           -Settings $settings -Description "รัน Edge Lab เก็บผลรายสัปดาห์"
 ```
+
+> ต้องมี `.env` ที่มี `DATABASE_URL` อยู่ใน `D:\money-project` — Task Scheduler
+> ไม่ได้สืบทอด environment จากเทอร์มินัลของคุณ ถ้าขาดจะเงียบๆ ไปเขียน SQLite แทน
 
 ตรวจ / ลบ:
 ```powershell
