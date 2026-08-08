@@ -93,3 +93,22 @@ def test_open_trades_survive_restart_with_trailing_state():
 def test_stats_empty_journal_is_safe():
     s = _journal().stats()
     assert s["trades_closed"] == 0 and s["expectancy"] == 0.0
+
+
+def test_signal_fields_land_in_correct_columns():
+    """Regression: ลำดับใน UNIQUE key ต่างจากลำดับคอลัมน์ใน INSERT — เคยทำให้
+    strategy_name ไปอยู่ใน candle_open_time. SQLite ไม่เช็ค type จึงรับไว้เงียบๆ
+    และไปพังตอนย้ายขึ้น Postgres. เทสต์นี้อ่านค่ากลับมาตรวจทีละคอลัมน์"""
+    j = _journal()
+    sid = j.record_signal(_signal(candle_time=1_700_000_000_000))
+    row = j.conn.execute("SELECT * FROM signals WHERE id=?", (sid,)).fetchone()
+    assert row["candle_open_time"] == 1_700_000_000_000   # ต้องเป็นตัวเลข ไม่ใช่ชื่อกลยุทธ์
+    assert row["strategy_name"] == "trend_following"
+    assert row["strategy_version"] == "1.1.0"
+    assert row["exchange"] == "binance"
+    assert row["symbol"] == "BTCUSDT"
+    assert row["timeframe"] == "15m"
+    assert row["direction"] == "long"
+    assert row["signal_score"] == 78
+    # candle_open_time ต้องเป็นชนิดตัวเลขจริงๆ (Postgres เป็น BIGINT)
+    assert isinstance(row["candle_open_time"], int)

@@ -12,10 +12,22 @@ from __future__ import annotations
 import os
 from typing import Optional
 
+try:  # โหลด .env เอง — สคริปต์บางตัว (journal_report, edge lab) ไม่ได้ import config
+    from dotenv import load_dotenv
 
-def _dsn() -> Optional[str]:
+    load_dotenv()
+except Exception:  # pragma: no cover
+    pass
+
+
+def database_url() -> Optional[str]:
+    """DATABASE_URL จาก .env/environment (None ถ้าไม่ได้ตั้ง). ใช้ตัวนี้เสมอ —
+    การอ่าน os.environ ตรงๆ จะพลาดเมื่อ .env ยังไม่ถูกโหลด"""
     dsn = (os.environ.get("DATABASE_URL") or "").strip()
     return dsn or None
+
+
+_dsn = database_url  # ชื่อเดิม (ใช้ภายใน)
 
 
 def backend_name() -> str:

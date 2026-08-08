@@ -47,7 +47,8 @@ class PostgresJournal:
                    ON CONFLICT (exchange, symbol, timeframe, strategy_name,
                                 strategy_version, candle_open_time) DO NOTHING
                    RETURNING id""",
-                (*key[:6],
+                (sig.exchange, sig.symbol, sig.timeframe, sig.candle_open_time,
+                 sig.strategy_name, sig.strategy_version,
                  sig.direction.value if isinstance(sig.direction, Direction) else sig.direction,
                  sig.signal_score, json.dumps(sig.score_breakdown),
                  json.dumps(sig.market_regime), sig.entry_price, sig.stop_loss,

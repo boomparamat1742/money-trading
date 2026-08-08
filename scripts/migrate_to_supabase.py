@@ -16,7 +16,8 @@ import sys
 
 
 def _connect_pg():
-    dsn = (os.environ.get("DATABASE_URL") or "").strip()
+    from worker.app.store import database_url
+    dsn = database_url()
     if not dsn:
         print("ยังไม่ได้ตั้ง DATABASE_URL — ดู docs/supabase-setup.md")
         return None
@@ -38,14 +39,35 @@ def _count(pg, table: str) -> int:
         return cur.fetchone()[0]
 
 
+def _unshift_legacy(r: dict) -> dict:
+    """ซ่อมแถวที่เขียนผิดคอลัมน์จากบั๊กเดิม.
+
+    บั๊ก: ลำดับใน UNIQUE key (…, strategy_name, strategy_version, candle_open_time)
+    ต่างจากลำดับคอลัมน์ใน INSERT (…, candle_open_time, strategy_name, strategy_version)
+    ทำให้ 3 ค่าถูกหมุนไปหนึ่งตำแหน่ง SQLite ไม่เช็ค type จึงรับไว้เงียบๆ
+
+    ตรวจจับได้ชัด: candle_open_time ที่ถูกต้องต้องเป็นตัวเลข ถ้าเป็นข้อความ = แถวเสีย
+    """
+    d = dict(r)
+    cot = d.get("candle_open_time")
+    if isinstance(cot, str) and not str(cot).isdigit():
+        d["candle_open_time"], d["strategy_name"], d["strategy_version"] = (
+            int(d["strategy_version"]), d["candle_open_time"], d["strategy_name"])
+        d["_repaired"] = True
+    return d
+
+
 def migrate_journal(pg, path: str, apply: bool) -> None:
     src = _sqlite(path)
     if src is None:
         print(f"  ข้าม journal — ไม่มีไฟล์ {path}")
         return
-    sigs = src.execute("SELECT * FROM signals ORDER BY id").fetchall()
+    sigs = [_unshift_legacy(r) for r in src.execute("SELECT * FROM signals ORDER BY id")]
     trades = src.execute("SELECT * FROM trades ORDER BY id").fetchall()
+    repaired = sum(1 for r in sigs if r.get("_repaired"))
     print(f"  journal ({path}): signals {len(sigs)} · trades {len(trades)}")
+    if repaired:
+        print(f"     ซ่อมแถวที่เขียนผิดคอลัมน์จากบั๊กเดิม: {repaired} แถว")
     if not apply:
         return
     if _count(pg, "trades") or _count(pg, "signals"):

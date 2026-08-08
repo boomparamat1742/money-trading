@@ -100,7 +100,8 @@ class Journal:
                 position_size, risk_amount, risk_pct, risk_status,
                 rejection_reason, indicators, trigger_reasons, status, created_at)
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (*key[:6],
+            (sig.exchange, sig.symbol, sig.timeframe, sig.candle_open_time,
+             sig.strategy_name, sig.strategy_version,
              sig.direction.value if isinstance(sig.direction, Direction) else sig.direction,
              sig.signal_score, json.dumps(sig.score_breakdown),
              json.dumps(sig.market_regime), sig.entry_price, sig.stop_loss,
