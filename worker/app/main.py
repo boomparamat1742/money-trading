@@ -27,6 +27,7 @@ from .notifier import (ConsoleNotifier, DailyQuota, LineNotifier, TelegramNotifi
 from .paper_trading import PaperBroker, attach_exit_market, entry_from_signal
 from .pipeline import SignalPipeline
 from .risk import PortfolioState
+from .version import build_line
 
 DEFAULT_CONFIRM_TFS = ["1h", "4h"]  # matches the validated backtest logic (v1.1)
 
@@ -184,6 +185,7 @@ async def supervise(symbol, s, pipeline, htf, last_warm, broker, quality,
 
 async def run() -> None:
     s = load_settings()
+    print(f"[startup] {build_line()}")
     tf = s.primary_timeframe
     symbols = s.symbols[:s.max_symbols]  # respect MAX_SYMBOLS cap
     tfs = confirm_tfs(s)
@@ -218,7 +220,8 @@ async def run() -> None:
         f"สัญลักษณ์: {', '.join(symbols)} @ {tf} (ยืนยันด้วย {'+'.join(tfs)})\n"
         f"อุ่นเครื่องด้วยข้อมูลย้อนหลังแล้ว — อินดิเคเตอร์พร้อม\n"
         f"risk รวมทุกเหรียญ: สูงสุด {s.risk.max_open_trades} ไม้พร้อมกัน\n"
-        f"โหมด: Paper Trading (ไม่ส่งคำสั่งจริง)\nAI context: {'เปิด' if s.ai_enabled else 'ปิด'}"
+        f"โหมด: Paper Trading (ไม่ส่งคำสั่งจริง)\nAI context: {'เปิด' if s.ai_enabled else 'ปิด'}\n"
+        f"{build_line()}"          # บอกว่า deploy ตัวไหนกำลังรัน — เช็คได้จากในไลน์เลย
     )
     print(f"[startup] streaming {len(symbols)} symbols ... (Ctrl+C to stop)")
 
