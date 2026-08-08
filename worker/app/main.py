@@ -1,0 +1,215 @@
+"""Real-time entry point (design §5) — live market watch + notifications.
+
+    Binance WebSocket → Data Quality → Pipeline (Fast Path) → Paper Trade
+    → LINE notify → (Slow Path) AI context → follow-up notify
+
+Runs in PAPER-TRADING mode only — it never sends real orders. The quant signals
+are NOT a proven edge (walk-forward showed none); this is a market-watch and
+alerting tool.
+
+Run:  python -m worker.app.main
+Env:  see .env.example  (LINE_CHANNEL_TOKEN + LINE_TO for alerts; else console)
+"""
+from __future__ import annotations
+
+import asyncio
+
+from .ai_context import get_context
+from .config import load_settings
+from .data_quality import DataQualityChecker
+from .htf import MultiTimeframeTrend
+from .journal import Journal
+from .market_data import BinanceSource
+from .models import Candle
+from .news import NewsService
+from .notifier import (ConsoleNotifier, DailyQuota, LineNotifier, TelegramNotifier,
+                       format_signal)
+from .paper_trading import PaperBroker
+from .pipeline import SignalPipeline
+from .risk import PortfolioState
+
+CONFIRM_TFS = ["1h", "4h"]  # must match the validated backtest logic (v1.1)
+
+
+def build_notifier(s):
+    import os
+    cap = int(os.environ.get("NOTIFY_MAX_PER_DAY", 20))
+    if s.line_channel_token and s.line_to:
+        print(f"[startup] notifier: LINE Messaging API (cap {cap} msgs/day)")
+        return DailyQuota(LineNotifier(s.line_channel_token, s.line_to), cap)
+    tg_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    tg_chat = os.environ.get("TELEGRAM_CHAT_ID", "")
+    if tg_token and tg_chat:
+        print("[startup] notifier: Telegram")
+        return TelegramNotifier(tg_token, tg_chat)
+    print("[startup] notifier: console (no LINE/Telegram credentials set)")
+    return ConsoleNotifier()
+
+
+def _warmup(symbol: str, tf: str, pipeline, htf, exchange: str, bars: int = 1500) -> int:
+    """Feed recent historical candles into the indicator + HTF engines so the
+    system can produce signals immediately instead of waiting days. No trades or
+    alerts are generated here. Returns the last warmed candle open_time."""
+    from backtest.fetch_binance import fetch as fetch_klines
+
+    print(f"[startup] warming up from ~{bars} recent {tf} candles ...")
+    try:
+        rows = fetch_klines(symbol, tf, bars)
+    except SystemExit as e:
+        print(f"[startup] warm-up skipped ({e}); starting cold (signals may take days)")
+        return 0
+    if len(rows) > 1:
+        rows = rows[:-1]  # drop the currently-forming (not-yet-closed) candle
+    last = 0
+    for r in rows:
+        c = Candle(exchange=exchange, symbol=symbol, timeframe=tf, open_time=int(r[0]),
+                   open=float(r[1]), high=float(r[2]), low=float(r[3]),
+                   close=float(r[4]), volume=float(r[5]), is_closed=True)
+        trend = htf.update(c)
+        pipeline.candidate(c, htf_trend=trend)  # advances indicators; result ignored
+        last = c.open_time
+    print(f"[startup] warmed {len(rows)} candles; indicator engine has {pipeline.ind.count} bars")
+    return last
+
+
+async def run_symbol(symbol, s, pipeline, htf, last_warm, broker, quality,
+                     news, notifier, portfolio, open_trades, journal=None) -> None:
+    """เฝ้า 1 เหรียญ: stream → settle → signal → notify. แชร์ risk/notifier
+    กับเหรียญอื่น แต่ indicators/htf/open_trades แยกต่อเหรียญ."""
+    tf = s.primary_timeframe
+    source = BinanceSource(exchange=s.exchange)
+    print(f"[startup] streaming {symbol}@{tf} ...")
+    async for candle in source.stream_closed_candles(symbol, tf):
+        if candle.open_time <= last_warm:
+            continue  # already seen during warm-up
+        q = quality.check(candle)
+        if not q.ok:
+            print(f"[quality] {symbol} skip: {q.reason}")
+            continue
+
+        # roll daily risk counters (also expires the loss-streak cooldown —
+        # without this the system locks up permanently after a losing streak)
+        portfolio.roll_day(candle.open_time)
+
+        # settle open paper trades on the new bar
+        for t in list(open_trades):
+            broker.update(t, candle)
+            if journal:
+                journal.update_trade(t)   # persist trailing stop / bars held
+            if t.status.value != "open":
+                open_trades.remove(t)
+                portfolio.open_trades -= 1
+                portfolio.open_risk_pct -= t.risk_pct
+                await notifier.send(
+                    f"[{t.symbol}] ปิดสถานะ {t.side.value.upper()} — {t.status.value}\n"
+                    f"PnL: {t.pnl_amount}  (RR {t.actual_rr})"
+                )
+
+        htf_trend = htf.update(candle)
+        sig = pipeline.process(candle, portfolio, htf_trend=htf_trend)
+        if not sig or sig.status != "approved":
+            continue
+
+        signal_id = journal.record_signal(sig) if journal else None
+        decision = sig._decision  # type: ignore[attr-defined]
+        trade = broker.open(decision, sig.direction, symbol, None, candle)
+        if journal:
+            journal.open_trade(trade, signal_id)
+        open_trades.append(trade)
+        portfolio.open_trades += 1
+        portfolio.open_risk_pct += decision.risk_pct or 0.0
+        await notifier.send(format_signal(sig))
+        print(f"[signal] {sig.direction.value} {symbol} score={sig.signal_score} @ {sig.entry_price}")
+
+        if s.ai_enabled:
+            try:
+                headlines = await news.recent_headlines(symbol)
+                ctx = await get_context(sig, headlines, s)
+                if ctx:
+                    if journal and signal_id:
+                        journal.attach_ai_context(signal_id, ctx)
+                    note = ctx.get("summary", "")
+                    if ctx.get("conflict_with_signal"):
+                        note = "⚠️ ข่าวขัดแย้งกับสัญญาณ — " + note
+                    await notifier.send(format_signal(sig, ai_note=note))
+            except Exception as e:
+                print(f"[ai] {symbol} context skipped: {e!r}")
+
+
+async def supervise(symbol, s, pipeline, htf, last_warm, broker, quality,
+                    news, notifier, portfolio, open_trades, journal=None) -> None:
+    """Keep one symbol's watcher alive. A monitor that dies silently is worse
+    than no monitor, so unexpected errors are reported to LINE and the stream is
+    restarted with backoff instead of taking the whole process down."""
+    backoff = 5
+    while True:
+        try:
+            await run_symbol(symbol, s, pipeline, htf, last_warm, broker, quality,
+                             news, notifier, portfolio, open_trades, journal)
+            return  # stream ended cleanly
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print(f"[error] {symbol} watcher crashed: {e!r}; restart in {backoff}s")
+            try:
+                await notifier.send(f"⚠️ ตัวเฝ้า {symbol} ขัดข้อง: {type(e).__name__} "
+                                    f"— กำลังรีสตาร์ทใน {backoff} วินาที")
+            except Exception:
+                pass
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 300)
+
+
+async def run() -> None:
+    s = load_settings()
+    tf = s.primary_timeframe
+    symbols = s.symbols[:s.max_symbols]  # respect MAX_SYMBOLS cap
+
+    # shared across symbols: risk budget, broker, notifier, quality, news
+    broker = PaperBroker(s.fees, trail_r_activate=1.0, trail_r_dist=1.0)
+    quality = DataQualityChecker()
+    news = NewsService(s.news_provider, s.news_api_key or None)
+    notifier = build_notifier(s)
+    portfolio = PortfolioState()
+
+    import os
+    journal = Journal(os.environ.get("JOURNAL_DB", "data/journal.db"))
+    print(f"[startup] journal: {journal.path}")
+
+    # per-symbol: own pipeline + htf + open_trades, warmed from history.
+    # Open trades are restored from the journal so a restart resumes them.
+    per_symbol = []
+    restored_total = 0
+    for sym in symbols:
+        pipeline = SignalPipeline(s.risk)
+        htf = MultiTimeframeTrend(tf, CONFIRM_TFS)
+        last_warm = _warmup(sym, tf, pipeline, htf, s.exchange)
+        restored = journal.load_open_trades(sym)
+        restored_total += len(restored)
+        portfolio.open_trades += len(restored)
+        portfolio.open_risk_pct += sum(t.risk_pct for t in restored)
+        if restored:
+            print(f"[startup] {sym}: restored {len(restored)} open paper trade(s)")
+        per_symbol.append((sym, pipeline, htf, last_warm, restored))
+
+    await notifier.send(
+        f"🟢 ระบบเฝ้าตลาดเริ่มทำงาน\n"
+        f"สัญลักษณ์: {', '.join(symbols)} @ {tf} (ยืนยันด้วย {'+'.join(CONFIRM_TFS)})\n"
+        f"อุ่นเครื่องด้วยข้อมูลย้อนหลังแล้ว — อินดิเคเตอร์พร้อม\n"
+        f"risk รวมทุกเหรียญ: สูงสุด {s.risk.max_open_trades} ไม้พร้อมกัน\n"
+        f"โหมด: Paper Trading (ไม่ส่งคำสั่งจริง)\nAI context: {'เปิด' if s.ai_enabled else 'ปิด'}"
+    )
+    print(f"[startup] streaming {len(symbols)} symbols ... (Ctrl+C to stop)")
+
+    await asyncio.gather(*[
+        supervise(sym, s, pipeline, htf, last_warm, broker, quality,
+                  news, notifier, portfolio, open_trades, journal)
+        for (sym, pipeline, htf, last_warm, open_trades) in per_symbol
+    ], return_exceptions=True)  # one symbol failing must not kill the others
+
+
+if __name__ == "__main__":  # pragma: no cover
+    try:
+        asyncio.run(run())
+    except KeyboardInterrupt:
+        print("\n[shutdown] stopped by user")

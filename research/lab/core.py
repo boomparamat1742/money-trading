@@ -1,0 +1,189 @@
+"""Edge Lab core — data bundle, return-series statistics, Hypothesis contract."""
+from __future__ import annotations
+
+import math
+import os
+from dataclasses import dataclass, field
+from typing import Iterable, Optional, Sequence
+
+DAY_MS = 86_400_000
+ANNUAL = 365  # crypto trades every day
+
+
+# --------------------------------------------------------------------------
+# statistics
+# --------------------------------------------------------------------------
+@dataclass
+class Stats:
+    n: int = 0
+    total_return: float = 0.0
+    cagr: float = 0.0
+    sharpe: float = 0.0
+    ann_vol: float = 0.0
+    max_drawdown: float = 0.0
+    exposure: float = 0.0        # fraction of periods with a position
+    hit_rate: float = 0.0        # fraction of periods with positive return
+
+    def line(self) -> str:
+        return (f"CAGR {self.cagr * 100:>7.1f}%  Sharpe {self.sharpe:>6.2f}  "
+                f"vol {self.ann_vol * 100:>6.1f}%  maxDD {self.max_drawdown * 100:>6.1f}%  "
+                f"n={self.n}")
+
+
+def compute_stats(returns: Sequence[float], times: Optional[Sequence[int]] = None,
+                  positions: Optional[Sequence[float]] = None) -> Stats:
+    """Stats for a series of PERIOD returns (fractional, e.g. 0.01 = +1%)."""
+    if not returns:
+        return Stats()
+    equity, peak, max_dd = 1.0, 1.0, 0.0
+    for r in returns:
+        equity *= (1 + r)
+        peak = max(peak, equity)
+        if peak > 0:
+            max_dd = max(max_dd, (peak - equity) / peak)
+    mean = sum(returns) / len(returns)
+    var = sum((r - mean) ** 2 for r in returns) / max(len(returns) - 1, 1)
+    sd = math.sqrt(var)
+    if times and len(times) >= 2:
+        years = max((times[-1] - times[0]) / (ANNUAL * DAY_MS), 1e-9)
+    else:
+        years = max(len(returns) / ANNUAL, 1e-9)
+    cagr = (equity ** (1 / years) - 1) if equity > 0 else -1.0
+    return Stats(
+        n=len(returns),
+        total_return=equity - 1,
+        cagr=cagr,
+        sharpe=(mean / sd * math.sqrt(ANNUAL)) if sd > 0 else 0.0,
+        ann_vol=sd * math.sqrt(ANNUAL),
+        max_drawdown=max_dd,
+        exposure=(sum(1 for p in positions if p) / len(positions)) if positions else 1.0,
+        hit_rate=sum(1 for r in returns if r > 0) / len(returns),
+    )
+
+
+# --------------------------------------------------------------------------
+# data
+# --------------------------------------------------------------------------
+@dataclass
+class DataBundle:
+    """Daily closes (and optionally daily funding) keyed by symbol → {day_ms: value}."""
+    prices: dict[str, dict[int, float]] = field(default_factory=dict)
+    funding: dict[str, dict[int, float]] = field(default_factory=dict)
+
+    @property
+    def dates(self) -> list[int]:
+        src = self.prices or self.funding
+        if not src:
+            return []
+        return sorted(set().union(*[set(m) for m in src.values()]))
+
+    def symbols(self) -> list[str]:
+        return sorted(self.prices or self.funding)
+
+
+def _is_stale(path: str, max_age_hours: Optional[float]) -> bool:
+    """True when the cached file should be re-fetched. `None` = never refresh.
+
+    Re-running the lab on unchanged data returns an identical verdict, which is
+    worthless — continuous research only means something if new bars arrive.
+    """
+    import time
+    if max_age_hours is None or not os.path.exists(path):
+        return not os.path.exists(path)
+    return (time.time() - os.path.getmtime(path)) > max_age_hours * 3600
+
+
+def load_prices(coins: Iterable[str], bars: int = 2500, quiet: bool = False,
+                max_age_hours: Optional[float] = None) -> dict[str, dict[int, float]]:
+    """Daily closes per coin, fetching from Binance on first use (or when stale)."""
+    from backtest.fetch_binance import fetch, write_csv
+    from backtest.synthetic import load_csv
+
+    out: dict[str, dict[int, float]] = {}
+    for coin in coins:
+        path = f"data/{coin}USDT_1d.csv"
+        if _is_stale(path, max_age_hours):
+            try:
+                if not quiet:
+                    print(f"  fetching {coin}USDT 1d ...", flush=True)
+                rows = fetch(f"{coin}USDT", "1d", bars)
+                if not rows:
+                    continue
+                write_csv(rows, path)
+            except SystemExit:
+                if not quiet:
+                    print(f"  skip {coin} (fetch failed)")
+                continue
+        candles = load_csv(path, symbol=f"{coin}USDT", timeframe="1d")
+        out[coin] = {c.open_time: c.close for c in candles}
+    return out
+
+
+def load_funding(coins: Iterable[str], records: int = 3000, quiet: bool = False,
+                 max_age_hours: Optional[float] = None) -> dict[str, dict[int, float]]:
+    """Daily TOTAL funding per coin (sums the 8h/4h payments inside each day)."""
+    import csv
+
+    from backtest.fetch_funding import fetch, write_csv
+
+    out: dict[str, dict[int, float]] = {}
+    for coin in coins:
+        path = f"data/{coin}USDT_funding.csv"
+        if _is_stale(path, max_age_hours):
+            try:
+                if not quiet:
+                    print(f"  fetching {coin}USDT funding ...", flush=True)
+                rows = fetch(f"{coin}USDT", records)
+                if not rows:
+                    continue
+                write_csv(rows, path)
+            except SystemExit:
+                continue
+        daily: dict[int, float] = {}
+        with open(path, newline="") as f:
+            for row in csv.DictReader(f):
+                try:
+                    t, rate = int(row["funding_time"]), float(row["funding_rate"])
+                except (ValueError, KeyError):
+                    continue
+                day = (t // DAY_MS) * DAY_MS
+                daily[day] = daily.get(day, 0.0) + rate
+        out[coin] = daily
+    return out
+
+
+# --------------------------------------------------------------------------
+# hypothesis contract
+# --------------------------------------------------------------------------
+class Hypothesis:
+    """สมมติฐานหนึ่งข้อว่า 'มี edge' — ต้องบอกได้ว่าจะวัดผลยังไงและเทียบกับอะไร.
+
+    ต้องกำหนด:
+      name / question   — ถามอะไร (เขียนให้คนอ่านรู้เรื่อง)
+      neutral           — True = market-neutral (benchmark คือ cash 0)
+      param_grid()      — พารามิเตอร์ที่จะจูน (ประกาศล่วงหน้า ห้ามเพิ่มหลังเห็นผล)
+      load()            — เตรียมข้อมูล
+      run(data, params) — คืน (times, returns, positions) เป็นผลตอบแทนรายวัน
+      benchmark(data)   — คืน (times, returns) ของ benchmark (ถ้า neutral ไม่ต้อง)
+    """
+
+    name: str = "unnamed"
+    question: str = ""
+    neutral: bool = False        # True → benchmark = cash (0)
+    cost_note: str = ""          # อธิบายว่าคิดต้นทุนอะไรไปแล้วบ้าง
+    # ชั่วโมงก่อนถือว่าข้อมูล cache เก่า (None = ไม่รีเฟรช) — ตั้งโดย watcher
+    max_age_hours: Optional[float] = None
+
+    def param_grid(self) -> list[dict]:  # pragma: no cover - interface
+        raise NotImplementedError
+
+    def load(self) -> DataBundle:  # pragma: no cover - interface
+        raise NotImplementedError
+
+    def run(self, data: DataBundle, params: dict):  # pragma: no cover - interface
+        """→ (times, returns, positions)"""
+        raise NotImplementedError
+
+    def benchmark(self, data: DataBundle):
+        """→ (times, returns). Default: cash for neutral strategies."""
+        return [], []

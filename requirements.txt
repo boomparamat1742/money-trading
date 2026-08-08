@@ -1,0 +1,18 @@
+# --- Core quant engine + backtest run on the Python standard library only ---
+# (no install needed to run backtests or tests)
+
+# --- Live / production layer (install when building Phase 1 data pipeline) ---
+websockets>=12.0          # exchange WebSocket streams
+aiohttp>=3.9              # REST gap-recovery + HTTP news fetch
+anthropic>=0.40           # Claude AI context service
+asyncpg>=0.29             # PostgreSQL (Supabase/Neon)
+redis>=5.0                # queue / cache (Upstash)
+python-dotenv>=1.0        # load .env
+pydantic>=2.6             # config + structured-output validation
+
+# --- Optional acceleration (core falls back to pure Python if absent) ---
+# numpy>=1.26
+# pandas>=2.2
+
+# --- Dev / test ---
+pytest>=8.0
