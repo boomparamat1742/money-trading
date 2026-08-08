@@ -162,7 +162,10 @@ class PaperBroker:
         t.exit_price = round(exit_px, 8)
         t.pnl_amount = round(gross - t.entry_fee - t.exit_fee, 6)
         t.pnl_pct = round((t.pnl_amount / t.risk_amount) * t.risk_pct, 4) if t.risk_amount else 0.0
-        risk_per_unit = abs(t.filled_entry - t.stop_loss)
+        # R วัดกับความเสี่ยง "ตอนเข้า" เสมอ ไม่ใช่ระยะ stop ปัจจุบัน:
+        # trailing เลื่อน stop มาเสมอตัวเมื่อไหร่ ตัวหารจะเกือบศูนย์ แล้ว RR จะระเบิด
+        # (เคยรายงาน RR -13.975 ทั้งที่ไม้นั้นแทบเสมอตัว) init_risk ถูกตรึงไว้ตอนเปิด
+        risk_per_unit = t.init_risk or abs(t.filled_entry - t.stop_loss)
         t.actual_rr = round((abs(exit_px - t.filled_entry) / risk_per_unit) * (1 if t.pnl_amount >= 0 else -1), 3) if risk_per_unit else 0.0
         t.status = status
         t.closed_at = candle.open_time

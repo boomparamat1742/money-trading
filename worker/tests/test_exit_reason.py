@@ -152,6 +152,30 @@ def test_attach_exit_market_ignores_open_trades():
     assert t.exit_context == {}
 
 
+def test_rr_is_measured_against_risk_at_entry_not_the_trailed_stop():
+    """เคสจริงจาก production (trade id=11): trailing เลื่อน stop มาเสมอตัว
+    ตัวหารเหลือ 0.026 จาก R จริง 3.31 → รายงาน RR -13.975 ทั้งที่ไม้แทบไม่ขาดทุน
+
+    R คือความเสี่ยงที่ "รับไว้ตอนเข้า" ตัวหารจึงต้องคงที่ตลอดอายุไม้
+    """
+    broker = PaperBroker(FREE, trail_r_activate=1.0, trail_r_dist=0.99)
+    _, t = _open(broker, entry=1923.11, sl=1919.80, tp=9999.0)   # R = 3.31
+    broker.update(t, _candle(1923, 1926.45, 1923, 1926.0, t=1))  # +1R → เลื่อน stop เกือบเสมอตัว
+    assert t.stop_loss > t.initial_stop
+    assert abs(t.filled_entry - t.stop_loss) < 0.1               # ตัวหารเดิมจะเกือบศูนย์
+    broker.update(t, _candle(1926, 1926, 1923.0, 1923.1, t=2))
+
+    assert t.status == TradeStatus.HIT_SL
+    assert abs(t.actual_rr) < 1.1        # ไม้เสมอตัวต้องไม่รายงานเกิน ±1R
+    assert abs(t.actual_rr) < 2.0        # และต้องไม่ใช่เลขสองหลักอย่างเดิม
+
+
+def test_rr_stays_about_minus_one_on_a_plain_stop_hit():
+    broker, t = _open()                                   # entry 100, sl 98 → R = 2
+    broker.update(t, _candle(100, 100.1, 97.9, 97.95, t=1))
+    assert -1.05 < t.actual_rr < -0.95
+
+
 # ---------- เก็บลง journal แล้วดึงกลับมาวิเคราะห์ ----------
 
 def _journal():
