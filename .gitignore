@@ -11,3 +11,6 @@ __pycache__/
 
 # editor / tool config
 .claude/
+
+# ตัวแปรสำหรับวางใน Railway (มีความลับ)
+railway-vars.txt

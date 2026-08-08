@@ -135,6 +135,35 @@ def adx(highs, lows, closes, n: int = 14):
     return dx, plus_di, minus_di
 
 
+SESSION_MS = 86_400_000   # คริปโตเทรด 24/7 → ใช้วัน UTC เป็น session (ตรงกับ TradingView)
+VWAP_MIN_BARS = 8         # ต้นวันข้อมูลน้อยเกินไป VWAP จะเหวี่ยงและเกาะราคา — รอก่อน
+
+
+def session_vwap(candles: list[Candle], min_bars: int = VWAP_MIN_BARS) -> Optional[dict]:
+    """Session VWAP (รีเซ็ต 00:00 UTC) พร้อม σ bands — แบบเดียวกับที่ TradingView
+    และ Binance แสดงเป็นค่า default สำหรับคริปโต.
+
+        VWAP = Σ(typical_price × volume) / Σ(volume),  typical = (H+L+C)/3
+
+    คืน None จนกว่าจะมีอย่างน้อย min_bars แท่งในวันนั้น เพราะ VWAP ตอนต้น session
+    คำนวณจากไม่กี่แท่ง ค่าจะติดราคาแทบตลอดจนไม่มีความหมาย
+    """
+    if not candles:
+        return None
+    day = candles[-1].open_time // SESSION_MS
+    todays = [c for c in candles if c.open_time // SESSION_MS == day]
+    if len(todays) < min_bars:
+        return None
+    total_vol = sum(c.volume for c in todays)
+    if total_vol <= 0:
+        return None
+    typicals = [((c.high + c.low + c.close) / 3, c.volume) for c in todays]
+    vwap = sum(tp * vol for tp, vol in typicals) / total_vol
+    # ส่วนเบี่ยงเบนแบบถ่วงน้ำหนักด้วย volume (ใช้ทำ band เหมือน TradingView)
+    variance = sum(vol * (tp - vwap) ** 2 for tp, vol in typicals) / total_vol
+    return {"vwap": vwap, "sd": variance ** 0.5, "bars": len(todays)}
+
+
 def roc(closes: list[float], n: int = 10) -> Optional[float]:
     if len(closes) < n + 1 or closes[-n - 1] == 0:
         return None
@@ -197,6 +226,17 @@ class IndicatorEngine:
         if vma is not None:
             v["vol_ma20"] = vma
             v["vol_ratio"] = (vols[-1] / vma) if vma else 0.0
+        vw = session_vwap(list(self._c))
+        if vw:
+            v["vwap"] = vw["vwap"]
+            v["vwap_sd"] = vw["sd"]
+            v["vwap_bars"] = float(vw["bars"])
+            v["vwap_upper1"] = vw["vwap"] + vw["sd"]
+            v["vwap_lower1"] = vw["vwap"] - vw["sd"]
+            v["vwap_upper2"] = vw["vwap"] + 2 * vw["sd"]
+            v["vwap_lower2"] = vw["vwap"] - 2 * vw["sd"]
+            if vw["vwap"]:
+                v["vwap_dist_pct"] = (closes[-1] - vw["vwap"]) / vw["vwap"] * 100
         hh = max(highs[-20:]) if len(highs) >= 20 else None
         ll = min(lows[-20:]) if len(lows) >= 20 else None
         if hh is not None:

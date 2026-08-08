@@ -32,6 +32,33 @@ def suggest_leverage(entry: Optional[float], stop: Optional[float]) -> Optional[
             "buffer": buffer, "cap": cap}
 
 
+def format_vwap(ind: dict) -> Optional[str]:
+    """บรรทัด VWAP สำหรับข้อความแจ้งเตือน — เป็นข้อมูลประกอบเท่านั้น
+    ยังไม่ได้ใช้เป็นเงื่อนไขในกลยุทธ์ (รอทดสอบใน Edge Lab ก่อน)"""
+    vwap = ind.get("vwap")
+    if not vwap:
+        return None
+    close = ind.get("close")
+    dist = ind.get("vwap_dist_pct", 0.0)
+    u1, l1 = ind.get("vwap_upper1"), ind.get("vwap_lower1")
+    u2, l2 = ind.get("vwap_upper2"), ind.get("vwap_lower2")
+
+    if close is not None and u2 is not None and close >= u2:
+        zone = "เหนือ +2σ (ยืดมาก)"
+    elif close is not None and u1 is not None and close >= u1:
+        zone = "เหนือ +1σ"
+    elif close is not None and l2 is not None and close <= l2:
+        zone = "ใต้ −2σ (ยืดมาก)"
+    elif close is not None and l1 is not None and close <= l1:
+        zone = "ใต้ −1σ"
+    else:
+        zone = "ในกรอบ ±1σ"
+
+    side = "เหนือ" if dist >= 0 else "ใต้"
+    return (f"VWAP วันนี้: {vwap:,.2f} — ราคา{side} VWAP {abs(dist):.2f}% · {zone}\n"
+            f"  ⓘ ข้อมูลประกอบ (ยังไม่ใช้ตัดสินใจ) · รีเซ็ต 00:00 UTC")
+
+
 def format_signal(sig: Signal, ai_note: Optional[str] = None) -> str:
     d = "LONG" if sig.direction.value == "long" else "SHORT"
     lines = [
@@ -63,6 +90,9 @@ def format_signal(sig: Signal, ai_note: Optional[str] = None) -> str:
                     lines.append(
                         f"ขาดทุนสูงสุดถ้าโดน SL: ~${sig.risk_amount:,.2f} ({sig.risk_pct}% ของทุน)")
             lines.append("  ⓘ ความเสี่ยงคุมด้วย SL/ขนาดไม้ ไม่ใช่ leverage — เลือกต่ำไว้ปลอดภัยกว่า")
+    vwap_line = format_vwap(sig.indicators)
+    if vwap_line:
+        lines.append(vwap_line)
     lines += [
         f"Regime: {sig.market_regime.get('regime')}",
         f"AI Context: {ai_note or '-'}",
