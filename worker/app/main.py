@@ -28,7 +28,18 @@ from .paper_trading import PaperBroker, attach_exit_market
 from .pipeline import SignalPipeline
 from .risk import PortfolioState
 
-CONFIRM_TFS = ["1h", "4h"]  # must match the validated backtest logic (v1.1)
+DEFAULT_CONFIRM_TFS = ["1h", "4h"]  # matches the validated backtest logic (v1.1)
+
+
+def confirm_tfs(s) -> list[str]:
+    """Higher timeframes that must agree before a signal is allowed.
+
+    Read from settings so CONFIRM_TIMEFRAMES in the environment actually does
+    something — it used to be declared in config and then ignored here, which
+    meant setting it on Railway silently changed nothing.
+    """
+    tfs = [t.strip() for t in (s.confirm_timeframes or "").split(",") if t.strip()]
+    return tfs or DEFAULT_CONFIRM_TFS
 
 
 def build_notifier(s):
@@ -174,6 +185,7 @@ async def run() -> None:
     s = load_settings()
     tf = s.primary_timeframe
     symbols = s.symbols[:s.max_symbols]  # respect MAX_SYMBOLS cap
+    tfs = confirm_tfs(s)
 
     # shared across symbols: risk budget, broker, notifier, quality, news
     broker = PaperBroker(s.fees, trail_r_activate=1.0, trail_r_dist=1.0)
@@ -190,7 +202,7 @@ async def run() -> None:
     restored_total = 0
     for sym in symbols:
         pipeline = SignalPipeline(s.risk)
-        htf = MultiTimeframeTrend(tf, CONFIRM_TFS)
+        htf = MultiTimeframeTrend(tf, tfs)
         last_warm = _warmup(sym, tf, pipeline, htf, s.exchange)
         restored = journal.load_open_trades(sym)
         restored_total += len(restored)
@@ -202,7 +214,7 @@ async def run() -> None:
 
     await notifier.send(
         f"🟢 ระบบเฝ้าตลาดเริ่มทำงาน\n"
-        f"สัญลักษณ์: {', '.join(symbols)} @ {tf} (ยืนยันด้วย {'+'.join(CONFIRM_TFS)})\n"
+        f"สัญลักษณ์: {', '.join(symbols)} @ {tf} (ยืนยันด้วย {'+'.join(tfs)})\n"
         f"อุ่นเครื่องด้วยข้อมูลย้อนหลังแล้ว — อินดิเคเตอร์พร้อม\n"
         f"risk รวมทุกเหรียญ: สูงสุด {s.risk.max_open_trades} ไม้พร้อมกัน\n"
         f"โหมด: Paper Trading (ไม่ส่งคำสั่งจริง)\nAI context: {'เปิด' if s.ai_enabled else 'ปิด'}"

@@ -20,7 +20,7 @@ def test_daily_quota_caps_messages():
     results = [asyncio.run(q.send(f"m{i}")) for i in range(5)]
     assert results == [True, True, True, False, False]
     assert len(inner.sent) == 3          # only 3 actually delivered
-    assert "โควตา" in inner.sent[-1]      # last delivered message warns about the cap
+    assert "เพดาน" in inner.sent[-1]      # last delivered message warns about the cap
 
 
 def test_daily_quota_resets_next_day(monkeypatch):
@@ -31,6 +31,70 @@ def test_daily_quota_resets_next_day(monkeypatch):
     q._day -= 1                           # simulate the day rolling over
     assert asyncio.run(q.send("c")) is True
     assert len(inner.sent) == 2
+
+
+class _WithQuota(_Fake):
+    """notifier ที่รายงานโควตาได้ เหมือน LineNotifier.quota()"""
+
+    def __init__(self, remaining, limit=500):
+        super().__init__()
+        self.q = {"limit": limit, "used": limit - remaining, "remaining": remaining}
+        self.quota_calls = 0
+
+    async def quota(self):
+        self.quota_calls += 1
+        return self.q
+
+
+def test_monthly_quota_stops_sending_before_line_cuts_us_off():
+    """เหลือน้อยกว่า reserve = หยุดเอง ไม่ปล่อยให้ LINE ตัดกลางทางแบบเงียบๆ"""
+    inner = _WithQuota(remaining=5)
+    q = DailyQuota(inner, max_per_day=100, monthly_reserve=20)
+    assert asyncio.run(q.send("a")) is False
+    assert inner.sent == []
+
+
+def test_daily_cap_still_applies_when_monthly_quota_is_healthy():
+    inner = _WithQuota(remaining=400)
+    q = DailyQuota(inner, max_per_day=2, monthly_reserve=20)
+    assert [asyncio.run(q.send(f"m{i}")) for i in range(4)] == [True, True, False, False]
+    assert len(inner.sent) == 2
+
+
+def test_quota_is_re_read_periodically_not_every_message():
+    """ถามทุกข้อความ = 2 HTTP call ต่อ 1 การแจ้งเตือน สิ้นเปลืองเปล่า"""
+    inner = _WithQuota(remaining=400)
+    q = DailyQuota(inner, max_per_day=100, refresh_every=3)
+    for _ in range(7):
+        asyncio.run(q.send("x"))
+    assert inner.quota_calls == 3       # ครั้งแรก + ทุก 3 ข้อความ
+
+
+def test_unlimited_plan_never_blocks():
+    class _Unlimited(_Fake):
+        async def quota(self):
+            return None                 # type != "limited"
+
+    inner = _Unlimited()
+    q = DailyQuota(inner, max_per_day=100)
+    assert asyncio.run(q.send("a")) is True
+
+
+def test_quota_lookup_failure_does_not_silence_alerts():
+    """อ่านโควตาไม่ได้ต้องส่งต่อ — เงียบเพราะ API ล่มคือแย่ที่สุด"""
+    class _Broken(_Fake):
+        async def quota(self):
+            raise RuntimeError("HTTP 500")
+
+    inner = _Broken()
+    q = DailyQuota(inner, max_per_day=100)
+    assert asyncio.run(q.send("a")) is True
+    assert inner.sent == ["a"]
+
+
+def test_notifier_without_quota_support_is_unaffected():
+    q = DailyQuota(_Fake(), max_per_day=2)          # ConsoleNotifier ไม่มี .quota
+    assert asyncio.run(q.send("a")) is True
 
 
 def test_leverage_capped_and_never_below_one():

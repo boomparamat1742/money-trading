@@ -1,5 +1,8 @@
 # secrets — never commit
+# .env.* ครอบไฟล์สำรอง/ไฟล์ชั่วคราวที่มีความลับด้วย (.env.bak ฯลฯ)
 .env
+.env.*
+!.env.example
 
 # fetched market data (regenerate via fetch scripts)
 data/

@@ -31,14 +31,32 @@ LINE_TO=<groupId>
 EXCHANGE=binance
 SYMBOLS=BTCUSDT,ETHUSDT,BNBUSDT
 PRIMARY_TIMEFRAME=15m
+CONFIRM_TIMEFRAMES=1h,4h
 ACCOUNT_EQUITY=10
 RISK_PER_TRADE_PCT=0.5
 SIGNAL_SCORE_THRESHOLD=65
 LEVERAGE_CAP=20
-NOTIFY_MAX_PER_DAY=20
+NOTIFY_MAX_PER_DAY=8
 AI_ENABLED=false
 TZ=Asia/Bangkok
 ```
+
+### โควตา LINE — ตัวเลขที่ต้องเข้าใจก่อนตั้ง NOTIFY_MAX_PER_DAY
+
+**LINE นับโควตาต่อ "ผู้รับ" ไม่ใช่ต่อข้อความ** — push เข้ากลุ่มที่มี 5 คน
+= **5 ข้อความ** ไม่ใช่ 1 ([LINE pricing](https://developers.line.biz/en/docs/messaging-api/pricing/))
+
+เช็กโควตาจริงของบัญชีคุณ:
+```bash
+python -m scripts.line_quota
+```
+
+1 ไม้กินอย่างน้อย 2 ข้อความ (เปิด + ปิด) และทุกครั้งที่ redeploy
+มีข้อความ "เริ่มทำงาน" อีก 1 — ตั้ง `NOTIFY_MAX_PER_DAY` จากโควตาที่เหลือหาร
+จำนวนวันที่เหลือในเดือน แล้วหารด้วยจำนวนคนในกลุ่มอีกที
+
+ระบบมีตัวกันซ้อนอยู่แล้ว: ถามโควตาจริงจาก LINE เป็นระยะ และหยุดส่งเองก่อนหมด
+(ตัวนับในหน่วยความจำเชื่อไม่ได้ เพราะ Railway รีสตาร์ทแล้วนับใหม่จากศูนย์)
 
 > ⚠️ **อย่า upload ไฟล์ `.env`** — Railway ใช้ Variables แทน และ `.env` ถูก gitignore + dockerignore ไว้แล้ว
 

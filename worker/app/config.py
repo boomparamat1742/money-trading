@@ -61,7 +61,12 @@ class Settings:
     exchange: str = _s("EXCHANGE", "binance")
     symbols: list[str] = field(default_factory=lambda: [s.strip() for s in _s("SYMBOLS", "BTCUSDT").split(",") if s.strip()])
     primary_timeframe: str = _s("PRIMARY_TIMEFRAME", "15m")
-    confirm_timeframe: str = _s("CONFIRM_TIMEFRAME", "1h")
+    # ทุกกรอบเวลาในนี้ต้องเห็นตรงกันสัญญาณถึงผ่าน (คั่นด้วย comma)
+    #
+    # ตั้งใจไม่รับชื่อเดิม CONFIRM_TIMEFRAME (เอกพจน์): มันถูกประกาศไว้แต่ไม่เคย
+    # ถูกใช้ ค่าที่ตั้งไว้คือ "1h" — ถ้ารับมาตอนนี้เท่ากับตัด 4h ออกจากฟิลเตอร์
+    # โดยไม่มีใครสั่ง ซึ่งเป็นการผ่อนกลยุทธ์แบบเงียบๆ
+    confirm_timeframes: str = _s("CONFIRM_TIMEFRAMES", "1h,4h")
 
     ai_enabled: bool = _b("AI_ENABLED", True)
     ai_model: str = _s("AI_MODEL", "claude-sonnet-5")

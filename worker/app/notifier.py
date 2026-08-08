@@ -159,28 +159,73 @@ class Notifier:
 
 
 class DailyQuota(Notifier):
-    """Wrap a notifier with a daily message cap. LINE's free tier allows only a
-    few hundred pushes per month — an unguarded signal stream can burn through it
-    in weeks. Once the cap is hit the remaining messages are logged, not sent,
-    and a single 'quota reached' notice goes out."""
+    """คุมปริมาณข้อความ 2 ชั้น: เพดานรายวัน (กันสแปม) + โควตารายเดือนจริงของ LINE
 
-    def __init__(self, inner: Notifier, max_per_day: int):
+    ทำไมต้องมีชั้นที่ 2: **LINE นับโควตาต่อ "ผู้รับ" ไม่ใช่ต่อข้อความ** — push
+    เข้ากลุ่มที่มี 5 คน = 5 ข้อความ แผนฟรีให้ 500/เดือน ดังนั้น 20 ข้อความ/วัน
+    ในกลุ่ม 3 คน = 1,800/เดือน คือเกินโควตาตั้งแต่สัปดาห์ที่สอง แล้วระบบจะ
+    เงียบสนิทโดยไม่มีใครรู้ — ซึ่งแย่กว่าไม่มีระบบเฝ้าตลาดเลย
+
+    ตัวนับในหน่วยความจำใช้ไม่ได้ เพราะ Railway รีสตาร์ทแล้วนับใหม่จากศูนย์
+    จึงถาม LINE เอายอดใช้จริงเป็นระยะแทน (inner.quota())
+    """
+
+    def __init__(self, inner: Notifier, max_per_day: int,
+                 monthly_reserve: int = 20, refresh_every: int = 10):
         self.inner = inner
         self.max_per_day = max_per_day
+        self.monthly_reserve = monthly_reserve   # กันไว้ให้ข้อความเตือนตัวเอง
+        self.refresh_every = refresh_every       # ถามยอดจริงทุกกี่ข้อความ
         self._day: Optional[int] = None
         self._sent = 0
+        self._since_refresh = 10**9              # ครั้งแรกถามทันที
+        self._remaining: Optional[int] = None    # None = ไม่รู้ (ไม่บล็อก)
+        self._warned_month = False
+
+    async def _refresh(self) -> None:
+        getter = getattr(self.inner, "quota", None)
+        if getter is None:
+            return
+        try:
+            q = await getter()
+        except Exception as e:
+            print(f"[notify] อ่านโควตา LINE ไม่ได้: {e!r}")
+            return
+        self._since_refresh = 0
+        if q is None:                            # แผนไม่จำกัด
+            self._remaining = None
+            return
+        self._remaining = q["remaining"]
+        print(f"[notify] โควตา LINE เดือนนี้: ใช้ไป {q['used']}/{q['limit']} "
+              f"เหลือ {q['remaining']}")
 
     async def send(self, text: str) -> bool:
         import time
         day = int(time.time() // 86_400)
         if self._day != day:
             self._day, self._sent = day, 0
-        if self._sent >= self.max_per_day:
-            print(f"[notify] quota {self.max_per_day}/day reached — not sent:\n{text}\n")
+
+        if self._since_refresh >= self.refresh_every:
+            await self._refresh()
+
+        if self._remaining is not None and self._remaining <= self.monthly_reserve:
+            if not self._warned_month:
+                self._warned_month = True
+                print(f"[notify] โควตา LINE รายเดือนใกล้หมด (เหลือ {self._remaining}) "
+                      f"— หยุดส่งจนกว่าจะขึ้นเดือนใหม่")
+            print(f"[notify] ไม่ได้ส่ง:\n{text}\n")
             return False
+
+        if self._sent >= self.max_per_day:
+            print(f"[notify] ครบเพดาน {self.max_per_day} ข้อความ/วัน — ไม่ได้ส่ง:\n{text}\n")
+            return False
+
         self._sent += 1
+        self._since_refresh += 1
+        if self._remaining is not None:
+            self._remaining -= 1                 # ประมาณการระหว่างรอ refresh
         if self._sent == self.max_per_day:
-            text += f"\n\n(ถึงโควตา {self.max_per_day} ข้อความ/วันแล้ว — ข้อความถัดไปจะขึ้นเฉพาะใน log)"
+            text += f"\n\n(ถึงเพดาน {self.max_per_day} ข้อความ/วันแล้ว — ข้อความถัดไปจะขึ้นเฉพาะใน log)"
         return await self.inner.send(text)
 
 
@@ -198,10 +243,36 @@ class LineNotifier(Notifier):
     """
 
     PUSH_URL = "https://api.line.me/v2/bot/message/push"
+    QUOTA_URL = "https://api.line.me/v2/bot/message/quota"
+    CONSUMPTION_URL = "https://api.line.me/v2/bot/message/quota/consumption"
 
     def __init__(self, channel_token: str, to: str):
         self.channel_token = channel_token
         self.to = to
+
+    async def quota(self) -> Optional[dict]:
+        """โควตาที่เหลือจริงของเดือนนี้ ถามจาก LINE โดยตรง.
+
+        คืน None เมื่อแผนไม่จำกัด (type != "limited") — ตัวนับในเครื่องเชื่อไม่ได้
+        เพราะรีสตาร์ททีก็เริ่มนับใหม่ ส่วนของ LINE คือความจริงเพียงหนึ่งเดียว
+        """
+        import aiohttp
+
+        headers = {"Authorization": f"Bearer {self.channel_token}"}
+        timeout = aiohttp.ClientTimeout(total=15)
+        async with aiohttp.ClientSession(headers=headers, timeout=timeout) as s:
+            async with s.get(self.QUOTA_URL) as r:
+                if r.status != 200:
+                    raise RuntimeError(f"quota HTTP {r.status}: {(await r.text())[:120]}")
+                q = await r.json()
+            if q.get("type") != "limited":
+                return None
+            limit = int(q.get("value", 0))
+            async with s.get(self.CONSUMPTION_URL) as r:
+                if r.status != 200:
+                    raise RuntimeError(f"consumption HTTP {r.status}: {(await r.text())[:120]}")
+                used = int((await r.json()).get("totalUsage", 0))
+        return {"limit": limit, "used": used, "remaining": max(0, limit - used)}
 
     async def send(self, text: str) -> bool:
         import aiohttp
