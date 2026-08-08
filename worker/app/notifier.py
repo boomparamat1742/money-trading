@@ -32,6 +32,18 @@ def suggest_leverage(entry: Optional[float], stop: Optional[float]) -> Optional[
             "buffer": buffer, "cap": cap}
 
 
+def fmt_price(p: Optional[float]) -> str:
+    """ราคาสำหรับ *แสดงผล* เท่านั้น — คำนวณยังใช้ค่าเต็มความละเอียดเหมือนเดิม
+
+    2 ตำแหน่งพอสำหรับเหรียญหลัก (BTC/ETH/BNB) แต่เหรียญที่ราคาต่ำกว่า $1
+    เช่น DOGE 0.08432 ถ้าปัดเหลือ 2 ตำแหน่งจะกลายเป็น 0.08 ซึ่งเอาไปตั้ง SL
+    ไม่ได้จริง — ช่วงนั้นจึงใช้เลขนัยสำคัญแทน
+    """
+    if p is None:
+        return "-"
+    return f"{p:,.2f}" if abs(p) >= 1 else f"{p:,.6g}"
+
+
 def format_vwap(ind: dict) -> Optional[str]:
     """บรรทัด VWAP สำหรับข้อความแจ้งเตือน — เป็นข้อมูลประกอบเท่านั้น
     ยังไม่ได้ใช้เป็นเงื่อนไขในกลยุทธ์ (รอทดสอบใน Edge Lab ก่อน)"""
@@ -55,7 +67,7 @@ def format_vwap(ind: dict) -> Optional[str]:
         zone = "ในกรอบ ±1σ"
 
     side = "เหนือ" if dist >= 0 else "ใต้"
-    return (f"VWAP วันนี้: {vwap:,.2f} — ราคา{side} VWAP {abs(dist):.2f}% · {zone}\n"
+    return (f"VWAP วันนี้: {fmt_price(vwap)} — ราคา{side} VWAP {abs(dist):.2f}% · {zone}\n"
             f"  ⓘ ข้อมูลประกอบ (ยังไม่ใช้ตัดสินใจ) · รีเซ็ต 00:00 UTC")
 
 
@@ -67,9 +79,9 @@ def format_signal(sig: Signal, ai_note: Optional[str] = None) -> str:
     ]
     if sig.entry_price is not None:
         lines += [
-            f"ราคาอ้างอิง: {sig.entry_price}",
-            f"ระดับ SL (อ้างอิง): {sig.stop_loss}",
-            f"ระดับ TP (อ้างอิง): {sig.take_profit}",
+            f"ราคาอ้างอิง: {fmt_price(sig.entry_price)}",
+            f"ระดับ SL (อ้างอิง): {fmt_price(sig.stop_loss)}",
+            f"ระดับ TP (อ้างอิง): {fmt_price(sig.take_profit)}",
             f"R:R: {sig.expected_rr}",
         ]
         lev = suggest_leverage(sig.entry_price, sig.stop_loss)
@@ -134,8 +146,8 @@ def format_close(t) -> str:
         lines.append(f"ถือไว้ {bars} แท่ง{note}")
 
     if ctx.get("stop_moved"):
-        lines.append(f"SL ถูกเลื่อนจาก {ctx.get('initial_stop'):,.8g} "
-                     f"→ {ctx.get('final_stop'):,.8g}")
+        lines.append(f"SL ถูกเลื่อนจาก {fmt_price(ctx.get('initial_stop'))} "
+                     f"→ {fmt_price(ctx.get('final_stop'))}")
 
     lines.append("บันทึกลง journal แล้ว (ใช้วิเคราะห์ย้อนหลังได้)")
     return "\n".join(lines)
