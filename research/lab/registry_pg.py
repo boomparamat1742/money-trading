@@ -19,6 +19,14 @@ class PostgresRegistry:
             cur.execute("SELECT COUNT(DISTINCT hypothesis) FROM edge_runs")
             return cur.fetchone()[0]
 
+    def hours_since_last_run(self):
+        """ชั่วโมงตั้งแต่รันล่าสุด (None = ยังไม่เคยรัน) — ให้ scheduler ในโปรเซส
+        ทนต่อ restart โดยดูเวลาจริงจาก DB"""
+        with self.conn.cursor() as cur:
+            cur.execute("SELECT EXTRACT(EPOCH FROM (now() - MAX(created_at))) FROM edge_runs")
+            v = cur.fetchone()[0]
+        return float(v) / 3600 if v is not None else None
+
     def record(self, ev) -> int:
         with self.conn.cursor() as cur:
             cur.execute(

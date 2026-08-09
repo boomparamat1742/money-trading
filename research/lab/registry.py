@@ -47,6 +47,18 @@ class Registry:
         return self.conn.execute(
             "SELECT COUNT(DISTINCT hypothesis) c FROM runs").fetchone()["c"]
 
+    def hours_since_last_run(self) -> Optional[float]:
+        """ชั่วโมงตั้งแต่รันล่าสุด (None = ยังไม่เคยรัน) — ใช้ให้ scheduler ในโปรเซส
+        ทนต่อการ restart: เก็บ 'รันล่าสุด' ไว้ใน DB ไม่ใช่ตัวนับในหน่วยความจำที่
+        รีเซ็ตทุกครั้งที่ worker เริ่มใหม่ (ไม่งั้น restart ถี่ = ไม่รันเลย)"""
+        row = self.conn.execute("SELECT MAX(created_at) m FROM runs").fetchone()
+        if not row or not row["m"]:
+            return None
+        last = datetime.fromisoformat(row["m"])
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - last).total_seconds() / 3600
+
     def record(self, ev) -> int:
         cur = self.conn.execute(
             """INSERT INTO runs (hypothesis, question, neutral, oos_sharpe, oos_cagr,

@@ -196,6 +196,38 @@ async def supervise(symbol, s, pipeline, htf, last_warm, broker, quality,
             backoff = min(backoff * 2, 300)
 
 
+def _edge_lab_tick(interval_hours: float) -> bool:
+    """เช็คว่าถึงเวลารัน Edge Lab หรือยัง (จาก DB) ถ้าถึงก็รัน 1 รอบ คืน True ถ้ารัน
+
+    ตั้งใจเป็น sync (บล็อกได้) — ผู้เรียกจะโยนเข้า thread ด้วย asyncio.to_thread
+    เพราะ Edge Lab หนักและมี time.sleep ห้ามให้ไปแช่ event loop ของ WebSocket
+    """
+    from research.lab.watch import run_once
+    from .store import open_registry
+
+    reg = open_registry()
+    try:
+        h = reg.hours_since_last_run()
+        if h is not None and h < interval_hours:
+            return False
+        print(f"[edgelab] ครบรอบ (ล่าสุด {'ไม่เคย' if h is None else f'{h:.0f} ชม.ก่อน'}) — รัน Edge Lab", flush=True)
+        run_once(reg, notify=True, verbose=True)
+        return True
+    finally:
+        reg.close()
+
+
+async def _edge_lab_loop(interval_hours: float) -> None:
+    """เฝ้าเวลาในโปรเซส worker (ทางเลือกแทน cron service แยก ที่ Railway trial
+    ทำไม่ได้เพราะจำกัด 1 service) — poll ทุกชั่วโมง รันเมื่อครบรอบ best-effort"""
+    while True:
+        try:
+            await asyncio.to_thread(_edge_lab_tick, interval_hours)
+        except Exception as e:
+            print(f"[edgelab] รอบนี้ข้าม: {e!r}")
+        await asyncio.sleep(3600)   # เช็คทุก 1 ชม. (ตัวตัดสินจริงคือเวลาใน DB)
+
+
 async def run() -> None:
     s = load_settings()
     print(f"[startup] {build_line()}")
@@ -238,11 +270,18 @@ async def run() -> None:
     )
     print(f"[startup] streaming {len(symbols)} symbols ... (Ctrl+C to stop)")
 
-    await asyncio.gather(*[
-        supervise(sym, s, pipeline, htf, last_warm, broker, quality,
-                  news, notifier, portfolio, open_trades, journal)
-        for (sym, pipeline, htf, last_warm, open_trades) in per_symbol
-    ], return_exceptions=True)  # one symbol failing must not kill the others
+    tasks = [supervise(sym, s, pipeline, htf, last_warm, broker, quality,
+                       news, notifier, portfolio, open_trades, journal)
+             for (sym, pipeline, htf, last_warm, open_trades) in per_symbol]
+
+    # รัน Edge Lab ในโปรเซสเดียวกัน (Railway trial จำกัด 1 service ต่อ project
+    # จึงตั้ง cron service แยกไม่ได้) — เปิดด้วย RUN_EDGE_LAB=true
+    if os.environ.get("RUN_EDGE_LAB", "false").lower() == "true":
+        interval = float(os.environ.get("EDGE_LAB_INTERVAL_HOURS", 168))  # สัปดาห์ละครั้ง
+        print(f"[startup] Edge Lab ในโปรเซส: เปิด (ทุก {interval:.0f} ชม.)")
+        tasks.append(_edge_lab_loop(interval))
+
+    await asyncio.gather(*tasks, return_exceptions=True)  # one failing task must not kill others
 
 
 if __name__ == "__main__":  # pragma: no cover
