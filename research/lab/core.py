@@ -66,9 +66,14 @@ def compute_stats(returns: Sequence[float], times: Optional[Sequence[int]] = Non
 # --------------------------------------------------------------------------
 @dataclass
 class DataBundle:
-    """Daily closes (and optionally daily funding) keyed by symbol → {day_ms: value}."""
+    """Daily closes (and optionally daily funding) keyed by symbol → {day_ms: value}.
+
+    `bars` holds raw OHLCV candles for hypotheses that run the real strategy
+    pipeline (not just close-to-close returns): keyed symbol → list[Candle].
+    """
     prices: dict[str, dict[int, float]] = field(default_factory=dict)
     funding: dict[str, dict[int, float]] = field(default_factory=dict)
+    bars: dict[str, list] = field(default_factory=dict)
 
     @property
     def dates(self) -> list[int]:
@@ -116,6 +121,33 @@ def load_prices(coins: Iterable[str], bars: int = 2500, quiet: bool = False,
                 continue
         candles = load_csv(path, symbol=f"{coin}USDT", timeframe="1d")
         out[coin] = {c.open_time: c.close for c in candles}
+    return out
+
+
+def load_ohlcv(coins: Iterable[str], timeframe: str, bars: int = 6000,
+               quiet: bool = False, max_age_hours: Optional[float] = None) -> dict[str, list]:
+    """Raw OHLCV candles per coin at `timeframe` — for hypotheses that run the
+    actual SignalPipeline (indicators, regime, ATR stops) rather than close-only
+    returns. Cached to data/{COIN}USDT_{tf}.csv like the other loaders."""
+    from backtest.fetch_binance import fetch, write_csv
+    from backtest.synthetic import load_csv
+
+    out: dict[str, list] = {}
+    for coin in coins:
+        path = f"data/{coin}USDT_{timeframe}.csv"
+        if _is_stale(path, max_age_hours):
+            try:
+                if not quiet:
+                    print(f"  fetching {coin}USDT {timeframe} ...", flush=True)
+                rows = fetch(f"{coin}USDT", timeframe, bars)
+                if not rows:
+                    continue
+                write_csv(rows, path)
+            except SystemExit:
+                if not quiet:
+                    print(f"  skip {coin} (fetch failed)")
+                continue
+        out[coin] = load_csv(path, symbol=f"{coin}USDT", timeframe=timeframe)
     return out
 
 

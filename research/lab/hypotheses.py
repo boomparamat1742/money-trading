@@ -4,7 +4,8 @@
 """
 from __future__ import annotations
 
-from .core import ANNUAL, DAY_MS, DataBundle, Hypothesis, load_funding, load_prices
+from .core import (ANNUAL, DAY_MS, DataBundle, Hypothesis, load_funding,
+                   load_ohlcv, load_prices)
 
 MAJORS = ["BTC", "ETH", "BNB", "XRP", "ADA", "SOL", "DOGE", "LTC",
           "LINK", "DOT", "AVAX", "TRX", "ATOM", "BCH", "ETC", "XLM"]
@@ -186,6 +187,97 @@ class FundingCarry(Hypothesis):
         return t, r, pos
 
 
+# ---------------------------------------------------------------- real strategy
+def _trades_to_daily(trades, dates: list[int], equity: float):
+    """แปลงไม้จาก backtest → ผลตอบแทน "รายวัน" บนแกนวันเดียวกับ benchmark
+
+    กำไร/ขาดทุนของไม้ผูกกับ "วันที่ปิด" (mark-to-close) หารด้วยทุน = return เศษส่วน
+    วันไหนไม่มีไม้ปิด = 0 (พอร์ตนิ่ง) ตำแหน่ง = 1 ถ้ามีไม้เปิดคาบวันนั้น เพื่อให้
+    exposure สะท้อนว่าอยู่ในตลาดจริงกี่ % ของเวลา
+    """
+    ret = {d: 0.0 for d in dates}
+    held = {d: 0.0 for d in dates}
+    for t in trades:
+        if t.closed_at is not None and (t.pnl_amount is not None):
+            day = (t.closed_at // DAY_MS) * DAY_MS
+            if day in ret:
+                ret[day] += t.pnl_amount / equity
+        if t.opened_at is not None:
+            lo = (t.opened_at // DAY_MS) * DAY_MS
+            hi = (t.closed_at // DAY_MS) * DAY_MS if t.closed_at else lo
+            for d in dates:
+                if lo <= d <= hi:
+                    held[d] = 1.0
+    return dates, [ret[d] for d in dates], [held[d] for d in dates]
+
+
+class TrendFollowHTF(Hypothesis):
+    """กลยุทธ์ production จริง (EMA/ADX/MACD + ATR stop + trailing) บนกรอบเวลาที่
+    ค่าธรรมเนียมไม่กลืน — 15m ตายเพราะ fee 0.70R/ไม้ แต่ 4h stop กว้างพอให้เหลือ
+    ~0.09R คำถามคือ: พอ fee ไม่ฆ่า สัญญาณเดิมมี edge เหลือไหม?
+
+    ยืนยันด้วย 1d (สูงกว่า 4h) เพราะ HTF gate ของกลยุทธ์บังคับให้เทรดตามเทรนด์ใหญ่
+    """
+    name = "trend_follow_4h"
+    question = "กลยุทธ์เดิมบน 4h (ยืนยันด้วย 1d) ที่ค่าธรรมเนียมไม่กลืน มี edge ไหม?"
+    neutral = False
+    cost_note = "taker+slippage จริงต่อไม้ (ตามค่า default ของระบบ)"
+
+    UNIVERSE = ["BTC", "ETH", "BNB"]      # เหมือนที่รันสดจริง
+    BASE_TF = "4h"
+    CONFIRM = ("1d",)
+    BARS = 12_000                         # ~5.5 ปีของ 4h → ได้หลาย fold ครอบหลาย regime
+    EQUITY = 10_000.0                      # Sharpe ไม่ขึ้นกับค่าทุน แต่เลี่ยงเลขเศษ
+
+    def param_grid(self):
+        # ประกาศล่วงหน้า · เล็ก · คร่อมค่าที่ระบบใช้จริง (sl 1.5 / tp 3.0)
+        return [{"sl": sl, "tp": tp} for sl in (1.5, 2.0) for tp in (3.0, 4.0)]
+
+    def load(self):
+        bars = load_ohlcv(self.UNIVERSE, self.BASE_TF, bars=self.BARS,
+                          max_age_hours=self.max_age_hours)
+        prices = load_prices(self.UNIVERSE, max_age_hours=self.max_age_hours)
+        # จัดแกนวันให้ตรงกับช่วงที่แท่ง 4h ครอบคลุมจริง — ไม่งั้น fold ช่วงต้นจะเป็น
+        # ศูนย์ล้วน (กลยุทธ์ยังไม่มีข้อมูลให้เทรด) แล้วสถิติเพี้ยน
+        spans = [ (c[0].open_time, c[-1].open_time) for c in bars.values() if c ]
+        if spans:
+            lo = min(s[0] for s in spans); hi = max(s[1] for s in spans)
+            prices = {sym: {d: v for d, v in m.items() if lo <= d <= hi}
+                      for sym, m in prices.items()}
+        return DataBundle(prices=prices, bars=bars)
+
+    def run(self, data, params):
+        from worker.app.config import Fees, RiskPolicy
+        from backtest.run_backtest import run as run_bt
+
+        policy = RiskPolicy()
+        object.__setattr__(policy, "account_equity", self.EQUITY)  # frozen dataclass
+        fees = Fees()
+        dates = data.dates
+        per_symbol_ret = []
+        held_any = {d: 0.0 for d in dates}
+        for sym, candles in data.bars.items():
+            if not candles:
+                continue
+            out = run_bt(candles, policy, fees, confirm_tfs=self.CONFIRM,
+                         sl_mult=params["sl"], tp_mult=params["tp"])
+            _, r, pos = _trades_to_daily(out.trades, dates, self.EQUITY)
+            per_symbol_ret.append(r)
+            for i, d in enumerate(dates):
+                if pos[i]:
+                    held_any[d] = 1.0
+        if not per_symbol_ret:
+            return [], [], []
+        # ถ่วงน้ำหนักเท่ากันทุกเหรียญ = จัดสรรทุนเท่าๆ กัน (ไม่ใช่ 3 เท่าของเดิมพันเดียว)
+        n = len(per_symbol_ret)
+        port = [sum(col) / n for col in zip(*per_symbol_ret)]
+        return dates, port, [held_any[d] for d in dates]
+
+    def benchmark(self, data):
+        return _equal_weight_market(data)
+
+
 REGISTRY: dict[str, type[Hypothesis]] = {
-    h.name: h for h in (TSMomentum, XSMomentumMajors, XSMomentumSmallCap, FundingCarry)
+    h.name: h for h in (TSMomentum, XSMomentumMajors, XSMomentumSmallCap,
+                        FundingCarry, TrendFollowHTF)
 }
