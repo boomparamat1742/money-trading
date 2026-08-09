@@ -9,12 +9,15 @@ from research.lab.hypotheses import FundingCarry
 D0 = 1_700_000_000_000 // DAY_MS * DAY_MS
 
 
-def _funding(pattern: dict[str, list[float]]) -> DataBundle:
-    """pattern: sym -> รายการ funding รายวันเรียงตามวัน"""
+def _funding(pattern: dict[str, list[float]], spot=None, perp=None) -> DataBundle:
+    """pattern: sym -> รายการ funding รายวันเรียงตามวัน (spot/perp เป็น closes รายวัน)"""
     n = max(len(v) for v in pattern.values())
     days = [D0 + i * DAY_MS for i in range(n)]
     funding = {sym: {days[i]: v[i] for i in range(len(v))} for sym, v in pattern.items()}
-    return DataBundle(funding=funding)
+    # ค่าเริ่มต้น: spot=perp=ราคาคงที่ → basis ไม่ขยับ (แยกผลของ funding ล้วน)
+    prices = {sym: {days[i]: (spot[sym][i] if spot else 100.0) for i in range(n)} for sym in pattern}
+    perps = {sym: {days[i]: (perp[sym][i] if perp else 100.0) for i in range(n)} for sym in pattern}
+    return DataBundle(funding=funding, prices=prices, perp=perps)
 
 
 def test_emits_a_return_every_day_including_flat_ones():
@@ -54,6 +57,33 @@ def test_turnover_cost_is_charged_even_when_closing_to_flat():
     t, r, pos = h.run(data, {"lookback": 1, "top_n": 2, "floor": 0.0005})
     # วันที่เปลี่ยนจากถือ→ว่าง ต้องมี cost ติดลบอย่างน้อยหนึ่งวัน
     assert any(x < 0 for x in r)
+
+
+def test_basis_move_against_us_eats_into_funding():
+    """perp วิ่งขึ้นแรงกว่า spot (basis กว้างขึ้น) → เราขาดทุนจากขา short perp
+    ต้องหักออกจาก funding ที่ได้ ไม่ใช่เก็บ funding เต็มๆ แบบไม่มีความเสี่ยง"""
+    # 3 วัน funding +0.001/วัน; วันที่ 2→3 perp +2% แต่ spot +0% → Δbasis = +2%
+    spot = {"BTC": [100.0, 100.0, 100.0], "ETH": [100.0, 100.0, 100.0]}
+    perp = {"BTC": [100.0, 100.0, 102.0], "ETH": [100.0, 100.0, 102.0]}
+    data = _funding({"BTC": [0.001, 0.001, 0.001], "ETH": [0.001, 0.001, 0.001]},
+                    spot=spot, perp=perp)
+    h = FundingCarry()
+    _, r, _ = h.run(data, {"lookback": 1, "top_n": 2, "floor": 0.0})
+    # วันสุดท้าย: funding +0.001 − Δbasis 0.02 = −0.019 (ขาดทุน แม้ funding บวก)
+    assert r[-1] < 0
+    assert abs(r[-1] - (0.001 - 0.02)) < 1e-6
+
+
+def test_flat_basis_leaves_pure_funding():
+    """spot กับ perp ขยับเท่ากัน → Δbasis = 0 → เหลือ funding ล้วน (คุมได้ว่า basis
+    ไม่เพี้ยนตอนราคาขยับพร้อมกัน)"""
+    spot = {"BTC": [100.0, 110.0, 121.0], "ETH": [100.0, 110.0, 121.0]}
+    perp = {"BTC": [100.0, 110.0, 121.0], "ETH": [100.0, 110.0, 121.0]}
+    data = _funding({"BTC": [0.001, 0.001, 0.001], "ETH": [0.001, 0.001, 0.001]},
+                    spot=spot, perp=perp)
+    h = FundingCarry()
+    _, r, _ = h.run(data, {"lookback": 1, "top_n": 2, "floor": 0.0})
+    assert abs(r[-1] - 0.001) < 1e-6        # funding ล้วน ไม่มี basis รบกวน
 
 
 def test_neutral_benchmark_is_cash():

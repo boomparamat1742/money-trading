@@ -71,9 +71,10 @@ class DataBundle:
     `bars` holds raw OHLCV candles for hypotheses that run the real strategy
     pipeline (not just close-to-close returns): keyed symbol → list[Candle].
     """
-    prices: dict[str, dict[int, float]] = field(default_factory=dict)
+    prices: dict[str, dict[int, float]] = field(default_factory=dict)   # spot closes
     funding: dict[str, dict[int, float]] = field(default_factory=dict)
     bars: dict[str, list] = field(default_factory=dict)
+    perp: dict[str, dict[int, float]] = field(default_factory=dict)     # perp closes
 
     @property
     def dates(self) -> list[int]:
@@ -120,6 +121,33 @@ def load_prices(coins: Iterable[str], bars: int = 2500, quiet: bool = False,
                     print(f"  skip {coin} (fetch failed)")
                 continue
         candles = load_csv(path, symbol=f"{coin}USDT", timeframe="1d")
+        out[coin] = {c.open_time: c.close for c in candles}
+    return out
+
+
+def load_perp(coins: Iterable[str], timeframe: str = "1d", bars: int = 2500,
+              quiet: bool = False, max_age_hours: Optional[float] = None) -> dict[str, dict[int, float]]:
+    """Perpetual-futures closes per coin (fapi) — paired with spot closes from
+    load_prices to measure basis (perp − spot). Cached to {COIN}USDT_{tf}_perp.csv."""
+    from backtest.fetch_binance import PERP_BASE, fetch, write_csv
+    from backtest.synthetic import load_csv
+
+    out: dict[str, dict[int, float]] = {}
+    for coin in coins:
+        path = f"data/{coin}USDT_{timeframe}_perp.csv"
+        if _is_stale(path, max_age_hours):
+            try:
+                if not quiet:
+                    print(f"  fetching {coin}USDT {timeframe} perp ...", flush=True)
+                rows = fetch(f"{coin}USDT", timeframe, bars, base=PERP_BASE)
+                if not rows:
+                    continue
+                write_csv(rows, path)
+            except SystemExit:
+                if not quiet:
+                    print(f"  skip {coin} perp (fetch failed)")
+                continue
+        candles = load_csv(path, symbol=f"{coin}USDT", timeframe=timeframe)
         out[coin] = {c.open_time: c.close for c in candles}
     return out
 

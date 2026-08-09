@@ -21,12 +21,15 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-BASE = "https://api.binance.com/api/v3/klines"
+BASE = "https://api.binance.com/api/v3/klines"          # spot
+PERP_BASE = "https://fapi.binance.com/fapi/v1/klines"   # USDⓈ-M perpetual
 INTERVAL_MS = {"1m": 60_000, "5m": 300_000, "15m": 900_000, "1h": 3_600_000,
                "4h": 14_400_000, "1d": 86_400_000}
 
 
-def fetch(symbol: str, interval: str, total: int) -> list[list]:
+def fetch(symbol: str, interval: str, total: int, base: str = BASE) -> list[list]:
+    """Klines walked backwards from now. `base` selects spot (default) or perp
+    (PERP_BASE) — same response shape, so basis = perp close − spot close."""
     step = INTERVAL_MS.get(interval)
     if step is None:
         raise SystemExit(f"unsupported interval: {interval} (use {', '.join(INTERVAL_MS)})")
@@ -41,7 +44,7 @@ def fetch(symbol: str, interval: str, total: int) -> list[list]:
             "symbol": symbol, "interval": interval,
             "startTime": start_time, "endTime": end_time, "limit": limit,
         })
-        req = urllib.request.Request(f"{BASE}?{params}", headers={"User-Agent": "quant-backtest/1.0"})
+        req = urllib.request.Request(f"{base}?{params}", headers={"User-Agent": "quant-backtest/1.0"})
         try:
             with urllib.request.urlopen(req, timeout=20) as resp:
                 batch = json.loads(resp.read().decode())

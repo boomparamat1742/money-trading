@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from .core import (ANNUAL, DAY_MS, DataBundle, Hypothesis, load_funding,
-                   load_ohlcv, load_prices)
+                   load_ohlcv, load_perp, load_prices)
 
 MAJORS = ["BTC", "ETH", "BNB", "XRP", "ADA", "SOL", "DOGE", "LTC",
           "LINK", "DOT", "AVAX", "TRX", "ATOM", "BCH", "ETC", "XLM"]
@@ -152,18 +152,28 @@ class FundingCarry(Hypothesis):
 
     ONE_WAY = 0.0015
     RECORDS = 6000        # funding ทุก 8 ชม. → ~2000 วัน ให้ได้หลาย fold
+    cost_note = "0.15%/เข้าออก + basis P&L (perp−spot) รายวัน"
 
     def param_grid(self):
         return [{"lookback": L, "top_n": n, "floor": f}
                 for L in (7, 14, 30) for n in (3, 5) for f in (0.0, 0.0002, 0.0005)]
 
     def load(self):
-        return DataBundle(funding=load_funding(MAJORS, records=self.RECORDS,
-                                               max_age_hours=self.max_age_hours))
+        funding = load_funding(MAJORS, records=self.RECORDS, max_age_hours=self.max_age_hours)
+        prices = load_prices(MAJORS, max_age_hours=self.max_age_hours)
+        perp = load_perp(MAJORS, max_age_hours=self.max_age_hours)
+        # จัดแกนวันให้อยู่ในช่วงที่มี funding จริง — ไม่งั้น spot ที่ยาวกว่าจะพา
+        # วันที่ไม่มี funding (ถือไม่ได้) เข้ามาเป็น 0 เยอะจนบิด fold
+        fdays = [d for m in funding.values() for d in m]
+        if fdays:
+            lo, hi = min(fdays), max(fdays)
+            prices = {s: {d: v for d, v in m.items() if lo <= d <= hi} for s, m in prices.items()}
+        return DataBundle(funding=funding, prices=prices, perp=perp)
 
     def run(self, data, params):
         L, N, floor = params["lookback"], params["top_n"], params["floor"]
         dates = data.dates
+        spot, perp = data.prices, data.perp
         prev: set[str] = set()
         t, r, pos = [], [], []
         for i, d in enumerate(dates):
@@ -182,12 +192,22 @@ class FundingCarry(Hypothesis):
                 turn = sum(abs((1 / nn if s in held else 0) - (1 / no if s in prev else 0))
                            for s in held | prev)
                 prev = held
-            # ปล่อย return "ทุกวัน" — วันที่ไม่ถือ = 0 (หรือติดลบจาก cost ปิดสถานะ)
-            # ถ้าข้ามวันเฉยๆ Sharpe จะเว่อร์เพราะนับแต่วันที่ได้กำไร (เคยได้ 8-15
-            # ทั้งที่ market-neutral จริงได้ 1-3) และ n จะน้อยจนตัดสินไม่ได้
+            # return รายวันของ long-spot/short-perp = funding − การเปลี่ยนของ basis
+            #   price P&L = spot_ret − perp_ret = −(perp_ret − spot_ret) = −Δbasis
+            # ถ้าไม่คิด Δbasis (แบบเดิม) vol จะต่ำปลอมจน Sharpe เว่อร์ — basis คือ
+            # ความเสี่ยงจริงของ carry ที่ทำให้ leg สองข้างไม่หักล้างกันเป๊ะรายวัน
             day_ret = -self.ONE_WAY * turn
-            if held:
-                day_ret += sum(data.funding[s][d] for s in held) / len(held)
+            if held and i >= 1:
+                dp = dates[i - 1]
+                contribs = []
+                for s in held:
+                    f = data.funding[s].get(d, 0.0)
+                    sc, sp = spot.get(s, {}).get(d), spot.get(s, {}).get(dp)
+                    pc, pp = perp.get(s, {}).get(d), perp.get(s, {}).get(dp)
+                    basis_chg = ((pc / pp - 1) - (sc / sp - 1)) if (sc and sp and pc and pp) else 0.0
+                    contribs.append(f - basis_chg)
+                if contribs:
+                    day_ret += sum(contribs) / len(contribs)
             t.append(d); r.append(day_ret); pos.append(1.0 if held else 0.0)
         return t, r, pos
 
