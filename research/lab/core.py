@@ -125,6 +125,31 @@ def load_prices(coins: Iterable[str], bars: int = 2500, quiet: bool = False,
     return out
 
 
+def load_oi(coins: Iterable[str], interval: str = "1d",
+            quiet: bool = False) -> dict[str, dict[int, float]]:
+    """Open-interest close per coin per day, จากไฟล์ที่ดึงมาด้วย
+    scripts/fetch_coinalyze_oi (Binance-only, USD notional). คีย์เป็น day_ms."""
+    import csv
+
+    out: dict[str, dict[int, float]] = {}
+    for coin in coins:
+        path = f"data/{coin}USDT_{interval}_oi.csv"
+        if not os.path.exists(path):
+            if not quiet:
+                print(f"  ไม่พบ {path} — รัน scripts.fetch_coinalyze_oi ก่อน")
+            continue
+        daily: dict[int, float] = {}
+        with open(path, newline="") as f:
+            for row in csv.DictReader(f):
+                try:
+                    t, c = int(row["open_time"]), float(row["oi_close"])
+                except (ValueError, KeyError):
+                    continue
+                daily[(t // DAY_MS) * DAY_MS] = c
+        out[coin] = daily
+    return out
+
+
 def load_perp(coins: Iterable[str], timeframe: str = "1d", bars: int = 2500,
               quiet: bool = False, max_age_hours: Optional[float] = None) -> dict[str, dict[int, float]]:
     """Perpetual-futures closes per coin (fapi) — paired with spot closes from

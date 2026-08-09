@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from .core import (ANNUAL, DAY_MS, DataBundle, Hypothesis, load_funding,
-                   load_ohlcv, load_perp, load_prices)
+                   load_ohlcv, load_oi, load_perp, load_prices)
 
 MAJORS = ["BTC", "ETH", "BNB", "XRP", "ADA", "SOL", "DOGE", "LTC",
           "LINK", "DOT", "AVAX", "TRX", "ATOM", "BCH", "ETC", "XLM"]
@@ -302,7 +302,93 @@ class TrendFollowHTF(Hypothesis):
         return _equal_weight_market(data)
 
 
+# ---------------------------------------------------------------- OI-confirmed
+def _oi_confirmed_daily(px: dict[int, float], oi: dict[int, float],
+                        dates: list[int], L: int, cost: float):
+    """ผลตอบแทนรายวันของกลยุทธ์ "ราคา+OI ยืนยันทิศ" (Technical Paper §15)
+
+      ราคาขึ้น + OI ขึ้น  → new money เข้า long  → +1 (long)
+      ราคาลง  + OI ขึ้น  → new money เข้า short → −1 (short)
+      OI ลง               → คนปิดสถานะ ไม่ชัด    →  0 (flat)
+
+    position ตัดสินจากข้อมูลถึงวัน d แล้วถือข้ามวัน d+1 (ไม่ look-ahead)
+    """
+    r = [0.0] * len(dates)
+    pos_out = [0.0] * len(dates)
+    prev = 0
+    held_seq = [0] * len(dates)          # position ที่ถือ "ระหว่างวัน" i
+    for i in range(len(dates)):
+        d = dates[i]
+        target = prev
+        if i >= L:
+            d0 = dates[i - L]
+            p, p0 = px.get(d), px.get(d0)
+            o, o0 = oi.get(d), oi.get(d0)
+            if p and p0 and o and o0:
+                price_up = p > p0
+                oi_up = o > o0
+                target = (1 if price_up else -1) if oi_up else 0
+        held_seq[i] = target
+        prev = target
+    for i in range(1, len(dates)):
+        d, dp = dates[i], dates[i - 1]
+        held = held_seq[i - 1]           # ตัดสินเมื่อวาน ถือวันนี้
+        before = held_seq[i - 2] if i >= 2 else 0
+        p, pp = px.get(d), px.get(dp)
+        ret = (p / pp - 1) if (p and pp) else 0.0
+        r[i] = held * ret - cost * abs(held - before)
+        pos_out[i] = 1.0 if held != 0 else 0.0
+    return r, pos_out
+
+
+class PriceOIConfirm(Hypothesis):
+    """ใช้ Open Interest ยืนยันทิศทางราคา — มิติข้อมูลจาก futures ที่อินดิเคเตอร์
+    ราคาล้วนมองไม่เห็น (Technical Paper §15) เทรดทั้ง long/short ตาม new money
+    ที่ไหลเข้า ต้องชนะการถือเฉยๆ หลังหักต้นทุนถึงจะนับว่ามี edge
+    """
+    name = "price_oi_confirm"
+    question = "ใช้ OI ยืนยันทิศราคา (new money เข้า long/short) ชนะ buy-and-hold ไหม?"
+    neutral = False
+    cost_note = f"{TRADE_COST*100:.2f}% ต่อการสลับสถานะ"
+    UNIVERSE = ["BTC", "ETH", "BNB"]
+
+    def param_grid(self):
+        return [{"lookback": L} for L in (3, 7, 14, 30)]
+
+    def load(self):
+        prices = load_prices(self.UNIVERSE, max_age_hours=self.max_age_hours)
+        oi = load_oi(self.UNIVERSE)
+        # จำกัดแกนวันให้อยู่ในช่วงที่มี OI (OI สั้นกว่าราคา)
+        odays = [d for m in oi.values() for d in m]
+        if odays:
+            lo, hi = min(odays), max(odays)
+            prices = {s: {d: v for d, v in m.items() if lo <= d <= hi} for s, m in prices.items()}
+        return DataBundle(prices=prices, funding=oi)   # เก็บ OI ใน funding slot (dict เหมือนกัน)
+
+    def run(self, data, params):
+        dates = data.dates
+        L = params["lookback"]
+        per_sym = []
+        held_any = [0.0] * len(dates)
+        for sym in self.UNIVERSE:
+            if sym not in data.prices or sym not in data.funding:
+                continue
+            r, pos = _oi_confirmed_daily(data.prices[sym], data.funding[sym],
+                                         dates, L, TRADE_COST)
+            per_sym.append(r)
+            for i, p in enumerate(pos):
+                if p:
+                    held_any[i] = 1.0
+        if not per_sym:
+            return [], [], []
+        n = len(per_sym)
+        return dates, [sum(c) / n for c in zip(*per_sym)], held_any
+
+    def benchmark(self, data):
+        return _equal_weight_market(data)
+
+
 REGISTRY: dict[str, type[Hypothesis]] = {
     h.name: h for h in (TSMomentum, XSMomentumMajors, XSMomentumSmallCap,
-                        FundingCarry, TrendFollowHTF)
+                        FundingCarry, TrendFollowHTF, PriceOIConfirm)
 }
