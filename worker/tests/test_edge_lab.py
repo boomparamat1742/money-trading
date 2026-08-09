@@ -8,8 +8,8 @@ import os
 import tempfile
 
 from research.lab.core import Hypothesis, Stats, compute_stats
-from research.lab.evaluate import (BENCH_MARGIN, MAX_DRAWDOWN, MIN_OOS_OBS,
-                                   evaluate, required_sharpe)
+from research.lab.evaluate import (BENCH_MARGIN, IMPLAUSIBLE_SHARPE, MAX_DRAWDOWN,
+                                   MIN_OOS_OBS, evaluate, required_sharpe)
 from research.lab.registry import Registry
 
 
@@ -88,6 +88,16 @@ def test_gate_rejects_catastrophic_drawdown():
     assert "drawdown" in ev.reason
 
 
+def test_gate_flags_implausibly_high_sharpe():
+    """Sharpe สูงลิ่ว (vol ต่ำผิดปกติ) = โมเดลลืมความเสี่ยง — ต้องไม่ปล่อยผ่าน
+    เคสจริง: funding_carry ได้ Sharpe 5+ เพราะไม่ได้นับ basis risk"""
+    h = _Fake(ret=0.003, bench_ret=0.0, neutral=True)   # mean สูง vol ต่ำ → Sharpe ~8
+    ev = evaluate(h, trials_before=0, verbose=False)
+    assert ev.oos.sharpe > IMPLAUSIBLE_SHARPE
+    assert not ev.passed
+    assert "สูงเกินจริง" in ev.reason
+
+
 def test_gate_flags_insufficient_data_instead_of_failing():
     """Too little OOS data must read as 'cannot judge', not as 'no edge'."""
     h = _Fake(ret=0.01, bench_ret=0.0, n=600)   # 540 train + 180 test → tiny OOS
@@ -97,9 +107,12 @@ def test_gate_flags_insufficient_data_instead_of_failing():
 
 
 def test_clear_winner_passes_all_gates():
-    h = _Fake(ret=0.004, bench_ret=0.0)   # clearly better risk-adjusted return
+    # Sharpe ต้องดีแต่ "สมจริง" (< IMPLAUSIBLE_SHARPE) — ret สูงกว่านี้ให้ Sharpe ~10
+    # ซึ่งด่าน "ดีเกินจริง" จะจับ (และควรจับ)
+    h = _Fake(ret=0.001, bench_ret=0.0)   # clearly better risk-adjusted return
     ev = evaluate(h, trials_before=0, verbose=False)
     assert ev.oos.sharpe > ev.benchmark.sharpe + BENCH_MARGIN
+    assert ev.oos.sharpe <= IMPLAUSIBLE_SHARPE
     assert ev.oos.max_drawdown <= MAX_DRAWDOWN
     assert ev.passed
 

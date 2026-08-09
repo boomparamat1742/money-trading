@@ -151,13 +151,15 @@ class FundingCarry(Hypothesis):
     cost_note = "0.15% ต่อการเข้า/ออกสถานะ (spot+perp taker)"
 
     ONE_WAY = 0.0015
+    RECORDS = 6000        # funding ทุก 8 ชม. → ~2000 วัน ให้ได้หลาย fold
 
     def param_grid(self):
         return [{"lookback": L, "top_n": n, "floor": f}
                 for L in (7, 14, 30) for n in (3, 5) for f in (0.0, 0.0002, 0.0005)]
 
     def load(self):
-        return DataBundle(funding=load_funding(MAJORS, max_age_hours=self.max_age_hours))
+        return DataBundle(funding=load_funding(MAJORS, records=self.RECORDS,
+                                               max_age_hours=self.max_age_hours))
 
     def run(self, data, params):
         L, N, floor = params["lookback"], params["top_n"], params["floor"]
@@ -180,10 +182,13 @@ class FundingCarry(Hypothesis):
                 turn = sum(abs((1 / nn if s in held else 0) - (1 / no if s in prev else 0))
                            for s in held | prev)
                 prev = held
+            # ปล่อย return "ทุกวัน" — วันที่ไม่ถือ = 0 (หรือติดลบจาก cost ปิดสถานะ)
+            # ถ้าข้ามวันเฉยๆ Sharpe จะเว่อร์เพราะนับแต่วันที่ได้กำไร (เคยได้ 8-15
+            # ทั้งที่ market-neutral จริงได้ 1-3) และ n จะน้อยจนตัดสินไม่ได้
+            day_ret = -self.ONE_WAY * turn
             if held:
-                t.append(d)
-                r.append(sum(data.funding[s][d] for s in held) / len(held) - self.ONE_WAY * turn)
-                pos.append(1.0)
+                day_ret += sum(data.funding[s][d] for s in held) / len(held)
+            t.append(d); r.append(day_ret); pos.append(1.0 if held else 0.0)
         return t, r, pos
 
 

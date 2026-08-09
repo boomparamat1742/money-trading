@@ -26,6 +26,9 @@ from .core import DataBundle, Hypothesis, Stats, compute_stats
 MIN_OOS_OBS = 180        # ต่ำกว่านี้ตัดสินไม่ได้ (ไม่ใช่ "ไม่ผ่าน" — คือ "ข้อมูลไม่พอ")
 MAX_DRAWDOWN = 0.60      # เกินนี้ = เอาไปใช้จริงไม่ได้ ต่อให้ Sharpe สวย
 BENCH_MARGIN = 0.25      # directional ต้องชนะ benchmark ด้วยระยะห่างที่ไม่ใช่แค่ noise
+# Sharpe สูงเกินนี้ในการเทรดคริปโตรายย่อย = แทบแน่ว่ามีความเสี่ยงที่โมเดลลืมคิด
+# (เช่น funding carry ที่ไม่นับ basis risk → vol ต่ำปลอม) ปล่อยผ่านคือหลอกตัวเอง
+IMPLAUSIBLE_SHARPE = 4.0
 
 
 @dataclass
@@ -164,10 +167,16 @@ def evaluate(hyp: Hypothesis, data: Optional[DataBundle] = None,
     beats_bench = True if hyp.neutral else (oos.sharpe > bench.sharpe + BENCH_MARGIN)
     consistent = bool(folds) and (n_pos / len(folds)) >= 0.5
     survivable = oos.max_drawdown <= MAX_DRAWDOWN
-    passed = bool(positive and beats_bench and consistent and survivable)
+    # "ดีเกินจริง" — Sharpe สูงลิ่วเกือบตลอดแปลว่าโมเดลลืมความเสี่ยงบางอย่าง
+    plausible = oos.sharpe <= IMPLAUSIBLE_SHARPE
+    passed = bool(positive and beats_bench and consistent and survivable and plausible)
 
     if not positive:
         reason = f"OOS Sharpe {oos.sharpe:.2f} ไม่ผ่านเกณฑ์ {bar:.2f} (ปรับตามจำนวนครั้งที่ลอง)"
+    elif not plausible:
+        reason = (f"⚠️ Sharpe {oos.sharpe:.2f} สูงเกินจริง (>{IMPLAUSIBLE_SHARPE}) — "
+                  f"vol {oos.ann_vol*100:.1f}% ต่ำผิดปกติ แทบแน่ว่ามีความเสี่ยงที่โมเดล"
+                  f"ยังไม่ได้คิด (เช่น basis risk ของ carry) ยังเชื่อไม่ได้จนกว่าจะโมเดลครบ")
     elif not beats_bench:
         reason = (f"ไม่ชนะ benchmark อย่างมีนัย — Sharpe {oos.sharpe:.2f} vs {bench.sharpe:.2f} "
                   f"(ต้องห่างอย่างน้อย {BENCH_MARGIN}) ส่วนต่างเท่านี้คือ noise ไม่ใช่ edge")
