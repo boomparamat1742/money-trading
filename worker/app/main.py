@@ -64,11 +64,13 @@ def _warmup(symbol: str, tf: str, pipeline, htf, exchange: str, bars: int = 1500
     """Feed recent historical candles into the indicator + HTF engines so the
     system can produce signals immediately instead of waiting days. No trades or
     alerts are generated here. Returns the last warmed candle open_time."""
-    from backtest.fetch_binance import fetch as fetch_klines
+    from backtest.fetch_binance import BASE, PERP_BASE, fetch as fetch_klines
+    from .market_data import futures_mode
 
-    print(f"[startup] warming up from ~{bars} recent {tf} candles ...")
+    base = PERP_BASE if futures_mode() else BASE   # warmup ต้องมาจากตลาดเดียวกับ live
+    print(f"[startup] warming up from ~{bars} recent {tf} {'futures' if futures_mode() else 'spot'} candles ...")
     try:
-        rows = fetch_klines(symbol, tf, bars)
+        rows = fetch_klines(symbol, tf, bars, base=base)
     except SystemExit as e:
         print(f"[startup] warm-up skipped ({e}); starting cold (signals may take days)")
         return 0
@@ -93,7 +95,7 @@ async def run_symbol(symbol, s, pipeline, htf, last_warm, broker, quality,
     tf = s.primary_timeframe
     source = BinanceSource(exchange=s.exchange)
     log_oi = os.environ.get("LOG_OI", "true").lower() != "false"   # ปิดได้ด้วย LOG_OI=false
-    print(f"[startup] streaming {symbol}@{tf} ...")
+    print(f"[startup] streaming {symbol}@{tf} [{source.market}/{source.feed}] ...")
     async for candle in source.stream_closed_candles(symbol, tf):
         if candle.open_time <= last_warm:
             continue  # already seen during warm-up
