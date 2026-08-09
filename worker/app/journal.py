@@ -66,6 +66,16 @@ CREATE TABLE IF NOT EXISTS trades (
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS market_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol TEXT NOT NULL,
+    ts INTEGER NOT NULL,                -- candle open_time (ms)
+    price REAL, mark_price REAL,
+    open_interest REAL, open_interest_value REAL,
+    funding_rate REAL,
+    created_at TEXT NOT NULL,
+    UNIQUE (symbol, ts)                 -- idempotent ต่อแท่ง กันบันทึกซ้ำตอน replay
+);
 """
 
 # index แยกจาก SCHEMA เพราะต้องสร้าง *หลัง* migrate — ตารางเก่ายังไม่มีคอลัมน์
@@ -74,6 +84,7 @@ INDEXES = """
 CREATE INDEX IF NOT EXISTS idx_trades_status ON trades(status);
 CREATE INDEX IF NOT EXISTS idx_trades_exit_reason ON trades(exit_reason);
 CREATE INDEX IF NOT EXISTS idx_signals_symbol_time ON signals(symbol, candle_open_time);
+CREATE INDEX IF NOT EXISTS idx_snapshots_symbol_ts ON market_snapshots(symbol, ts);
 """
 
 # คอลัมน์ที่เพิ่มทีหลัง — CREATE TABLE IF NOT EXISTS ไม่แตะตารางที่มีอยู่แล้ว
@@ -146,6 +157,20 @@ class Journal:
     def attach_ai_context(self, signal_id: int, ctx: dict[str, Any]) -> None:
         self.conn.execute("UPDATE signals SET ai_context=? WHERE id=?",
                           (json.dumps(ctx, ensure_ascii=False), signal_id))
+        self.conn.commit()
+
+    # ---------- market snapshots (สะสม OI/funding ไว้วิจัยภายหลัง) ----------
+    def record_snapshot(self, symbol: str, ts: int, price: Optional[float],
+                        snap: dict) -> None:
+        """บันทึก OI/funding ของแท่งหนึ่ง idempotent ต่อ (symbol, ts)
+        `snap` = ผลจาก futures_data.fetch_oi_funding (คีย์อาจขาดได้ — ใช้ .get)"""
+        self.conn.execute(
+            """INSERT OR IGNORE INTO market_snapshots
+               (symbol, ts, price, mark_price, open_interest,
+                open_interest_value, funding_rate, created_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (symbol, ts, price, snap.get("mark_price"), snap.get("open_interest"),
+             snap.get("open_interest_value"), snap.get("funding_rate"), _now()))
         self.conn.commit()
 
     # ---------- trades ----------

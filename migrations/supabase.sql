@@ -85,6 +85,25 @@ ALTER TABLE trades ADD COLUMN IF NOT EXISTS exit_context JSONB;
 CREATE INDEX IF NOT EXISTS idx_trades_status ON trades(status);
 CREATE INDEX IF NOT EXISTS idx_trades_symbol ON trades(symbol);
 CREATE INDEX IF NOT EXISTS idx_trades_exit_reason ON trades(exit_reason);
+
+-- ══════════════════════════════════════════════════════════════
+-- Market snapshots — เก็บ OI/funding สดทุกแท่ง (Binance ให้ประวัติ OI ฟรีแค่ 30 วัน
+-- จึงต้องสะสมเอง) ไว้ทำวิจัย edge จาก derivatives positioning ในอนาคต
+-- ══════════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS market_snapshots (
+    id                   BIGSERIAL PRIMARY KEY,
+    symbol               TEXT NOT NULL,
+    ts                   BIGINT NOT NULL,          -- candle open_time (ms)
+    price                DOUBLE PRECISION,
+    mark_price           DOUBLE PRECISION,
+    open_interest        DOUBLE PRECISION,         -- contracts (base asset)
+    open_interest_value  DOUBLE PRECISION,         -- notional USD = OI × mark
+    funding_rate         DOUBLE PRECISION,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (symbol, ts)                            -- idempotent ต่อแท่ง
+);
+CREATE INDEX IF NOT EXISTS idx_snapshots_symbol_ts ON market_snapshots(symbol, ts DESC);
+ALTER TABLE market_snapshots ENABLE ROW LEVEL SECURITY;
 CREATE INDEX IF NOT EXISTS idx_signals_symbol_time ON signals(symbol, candle_open_time DESC);
 
 -- ══════════════════════════════════════════════════════════════

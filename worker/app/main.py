@@ -13,10 +13,12 @@ Env:  see .env.example  (LINE_CHANNEL_TOKEN + LINE_TO for alerts; else console)
 from __future__ import annotations
 
 import asyncio
+import os
 
 from .ai_context import get_context
 from .config import load_settings
 from .data_quality import DataQualityChecker
+from .futures_data import fetch_oi_funding
 from .htf import MultiTimeframeTrend
 from .store import open_journal
 from .market_data import BinanceSource
@@ -90,6 +92,7 @@ async def run_symbol(symbol, s, pipeline, htf, last_warm, broker, quality,
     กับเหรียญอื่น แต่ indicators/htf/open_trades แยกต่อเหรียญ."""
     tf = s.primary_timeframe
     source = BinanceSource(exchange=s.exchange)
+    log_oi = os.environ.get("LOG_OI", "true").lower() != "false"   # ปิดได้ด้วย LOG_OI=false
     print(f"[startup] streaming {symbol}@{tf} ...")
     async for candle in source.stream_closed_candles(symbol, tf):
         if candle.open_time <= last_warm:
@@ -102,6 +105,16 @@ async def run_symbol(symbol, s, pipeline, htf, last_warm, broker, quality,
         # roll daily risk counters (also expires the loss-streak cooldown —
         # without this the system locks up permanently after a losing streak)
         portfolio.roll_day(candle.open_time)
+
+        # เก็บ OI/funding ของแท่งนี้ไว้สะสมสำหรับวิจัยภายหลัง (Binance ให้ประวัติ OI
+        # ฟรีแค่ 30 วัน จึงต้องเก็บสดเอง) best-effort ล้วน — ห้ามทำให้ loop พัง
+        if journal and log_oi:
+            try:
+                oi = await fetch_oi_funding(symbol)
+                if oi:
+                    journal.record_snapshot(symbol, candle.open_time, candle.close, oi)
+            except Exception as e:
+                print(f"[oi] {symbol} snapshot skipped: {e!r}")
 
         # settle open paper trades on the new bar. Freeing the risk slot happens
         # here so a signal on this same bar can use it; the journal write and the

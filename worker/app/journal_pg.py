@@ -34,7 +34,7 @@ class PostgresJournal:
         self._migrate()
 
     def _migrate(self) -> None:
-        """คอลัมน์ที่เพิ่มทีหลัง — ฐานข้อมูลที่ deploy ไปแล้วยังไม่มี
+        """คอลัมน์/ตารางที่เพิ่มทีหลัง — ฐานข้อมูลที่ deploy ไปแล้วยังไม่มี
         (migrations/supabase.sql มีให้ครบสำหรับตารางที่สร้างใหม่)"""
         with self.conn.cursor() as cur:
             for col, decl in (("initial_stop", "DOUBLE PRECISION"),
@@ -42,6 +42,17 @@ class PostgresJournal:
                               ("exit_reason", "TEXT"),
                               ("exit_context", "JSONB")):
                 cur.execute(f"ALTER TABLE trades ADD COLUMN IF NOT EXISTS {col} {decl}")
+            cur.execute(
+                """CREATE TABLE IF NOT EXISTS market_snapshots (
+                    id BIGSERIAL PRIMARY KEY,
+                    symbol TEXT NOT NULL,
+                    ts BIGINT NOT NULL,
+                    price DOUBLE PRECISION, mark_price DOUBLE PRECISION,
+                    open_interest DOUBLE PRECISION, open_interest_value DOUBLE PRECISION,
+                    funding_rate DOUBLE PRECISION,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    UNIQUE (symbol, ts)
+                )""")
 
     # ---------- signals ----------
     def record_signal(self, sig: Signal) -> Optional[int]:
@@ -83,6 +94,19 @@ class PostgresJournal:
         with self.conn.cursor() as cur:
             cur.execute("UPDATE signals SET ai_context=%s WHERE id=%s",
                         (json.dumps(ctx, ensure_ascii=False), signal_id))
+
+    # ---------- market snapshots ----------
+    def record_snapshot(self, symbol: str, ts: int, price: Optional[float],
+                        snap: dict) -> None:
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO market_snapshots
+                   (symbol, ts, price, mark_price, open_interest,
+                    open_interest_value, funding_rate, created_at)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                   ON CONFLICT (symbol, ts) DO NOTHING""",
+                (symbol, ts, price, snap.get("mark_price"), snap.get("open_interest"),
+                 snap.get("open_interest_value"), snap.get("funding_rate"), _now()))
 
     # ---------- trades ----------
     def open_trade(self, t: PaperTrade, signal_id: Optional[int] = None) -> int:
