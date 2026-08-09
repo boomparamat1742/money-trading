@@ -104,6 +104,23 @@ CREATE TABLE IF NOT EXISTS market_snapshots (
 );
 CREATE INDEX IF NOT EXISTS idx_snapshots_symbol_ts ON market_snapshots(symbol, ts DESC);
 ALTER TABLE market_snapshots ENABLE ROW LEVEL SECURITY;
+
+-- ══════════════════════════════════════════════════════════════
+-- OI history — Open Interest ประวัติรายวัน (นำเข้าจาก Coinalyze CSV)
+-- ให้ Edge Lab บน Railway ใช้ได้ (data/ ที่นั่นล้างทุกรอบ)
+-- นำเข้าด้วย: python -m scripts.import_oi_to_supabase
+-- ══════════════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS oi_history (
+    symbol     TEXT NOT NULL,
+    interval   TEXT NOT NULL DEFAULT '1d',
+    ts         BIGINT NOT NULL,              -- open_time (ms)
+    oi_open    DOUBLE PRECISION,
+    oi_high    DOUBLE PRECISION,
+    oi_low     DOUBLE PRECISION,
+    oi_close   DOUBLE PRECISION,             -- USD notional (Binance-only)
+    PRIMARY KEY (symbol, interval, ts)
+);
+ALTER TABLE oi_history ENABLE ROW LEVEL SECURITY;
 CREATE INDEX IF NOT EXISTS idx_signals_symbol_time ON signals(symbol, candle_open_time DESC);
 
 -- ══════════════════════════════════════════════════════════════

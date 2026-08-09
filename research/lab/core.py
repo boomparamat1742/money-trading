@@ -125,18 +125,51 @@ def load_prices(coins: Iterable[str], bars: int = 2500, quiet: bool = False,
     return out
 
 
+def _load_oi_pg(dsn: str, coins: Iterable[str], interval: str) -> dict[str, dict[int, float]]:
+    """OI close ต่อวัน จากตาราง oi_history บน Supabase (ให้ Edge Lab บน Railway ใช้ได้
+    ที่ `data/` ล้างทุกรอบ) — นำเข้าด้วย scripts/import_oi_to_supabase"""
+    import psycopg
+
+    out: dict[str, dict[int, float]] = {}
+    with psycopg.connect(dsn) as c, c.cursor() as cur:
+        for coin in coins:
+            cur.execute(
+                "SELECT ts, oi_close FROM oi_history WHERE symbol=%s AND interval=%s",
+                (f"{coin}USDT", interval))
+            daily = {(int(t) // DAY_MS) * DAY_MS: float(v)
+                     for t, v in cur.fetchall() if v is not None}
+            if daily:
+                out[coin] = daily
+    return out
+
+
 def load_oi(coins: Iterable[str], interval: str = "1d",
             quiet: bool = False) -> dict[str, dict[int, float]]:
-    """Open-interest close per coin per day, จากไฟล์ที่ดึงมาด้วย
-    scripts/fetch_coinalyze_oi (Binance-only, USD notional). คีย์เป็น day_ms."""
+    """Open-interest close per coin per day (Binance-only, USD notional), day_ms keys.
+
+    Supabase (oi_history) ก่อนถ้ามี DATABASE_URL — ไม่งั้นอ่าน CSV ในเครื่องที่ดึงด้วย
+    scripts/fetch_coinalyze_oi. แบบนี้ทั้ง local และ Railway เห็นข้อมูลชุดเดียวกัน
+    """
     import csv
+
+    from worker.app.store import database_url
+
+    dsn = database_url()
+    if dsn:
+        try:
+            pg = _load_oi_pg(dsn, coins, interval)
+            if pg:
+                return pg
+        except Exception as e:      # ตาราง/DB มีปัญหา → fallback CSV
+            if not quiet:
+                print(f"  อ่าน OI จาก Supabase ไม่ได้ ({type(e).__name__}) → ลอง CSV")
 
     out: dict[str, dict[int, float]] = {}
     for coin in coins:
         path = f"data/{coin}USDT_{interval}_oi.csv"
         if not os.path.exists(path):
             if not quiet:
-                print(f"  ไม่พบ {path} — รัน scripts.fetch_coinalyze_oi ก่อน")
+                print(f"  ไม่พบ {path} — รัน scripts.fetch_coinalyze_oi / import_oi_to_supabase")
             continue
         daily: dict[int, float] = {}
         with open(path, newline="") as f:
