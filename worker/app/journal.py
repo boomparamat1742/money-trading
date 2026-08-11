@@ -101,6 +101,36 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def summarize_day(opened: int, rows: list) -> dict[str, Any]:
+    """สรุปกิจกรรมรอบวันจากไม้ที่ปิด (rows = dict มี symbol/pnl_amount/actual_rr/exit_reason).
+    ใช้ร่วมกันทั้ง SQLite และ Postgres เพื่อไม่ให้ตรรกะสรุปแตกกันสองที่"""
+    pnls = [(r["pnl_amount"] or 0.0) for r in rows]
+    rrs = [r["actual_rr"] for r in rows if r["actual_rr"] is not None]
+    wins = sum(1 for p in pnls if p > 0)
+    by_exit: dict[str, int] = {}
+    by_sym: dict[str, dict] = {}
+    for r in rows:
+        er = r["exit_reason"] or "?"
+        by_exit[er] = by_exit.get(er, 0) + 1
+        s = by_sym.setdefault(r["symbol"], {"n": 0, "pnl": 0.0})
+        s["n"] += 1
+        s["pnl"] += r["pnl_amount"] or 0.0
+    best = max(rows, key=lambda r: (r["actual_rr"] if r["actual_rr"] is not None else -9)) if rows else None
+    worst = min(rows, key=lambda r: (r["actual_rr"] if r["actual_rr"] is not None else 9)) if rows else None
+    return {
+        "opened": opened,
+        "closed": len(rows),
+        "wins": wins, "losses": len(rows) - wins,
+        "win_rate": round(wins / len(rows) * 100, 1) if rows else 0.0,
+        "net_pnl": round(sum(pnls), 4),
+        "avg_rr": round(sum(rrs) / len(rrs), 3) if rrs else 0.0,
+        "by_exit": by_exit,
+        "by_symbol": {k: {"n": v["n"], "pnl": round(v["pnl"], 4)} for k, v in by_sym.items()},
+        "best": {"symbol": best["symbol"], "rr": best["actual_rr"]} if best and best["actual_rr"] is not None else None,
+        "worst": {"symbol": worst["symbol"], "rr": worst["actual_rr"]} if worst and worst["actual_rr"] is not None else None,
+    }
+
+
 class Journal:
     def __init__(self, path: str = "data/journal.db"):
         self.path = path
@@ -211,6 +241,17 @@ class Journal:
         self.conn.commit()
 
     close_trade = update_trade  # same write; named for intent at the call site
+
+    def daily_summary(self, since_ms: int, until_ms: int) -> dict[str, Any]:
+        opened = self.conn.execute(
+            "SELECT COUNT(*) c FROM trades WHERE opened_at >= ? AND opened_at < ?",
+            (since_ms, until_ms)).fetchone()["c"]
+        rows = self.conn.execute(
+            """SELECT symbol, pnl_amount, actual_rr, exit_reason FROM trades
+               WHERE closed_at >= ? AND closed_at < ?
+               AND status IN ('hit_tp','hit_sl','expired')""",
+            (since_ms, until_ms)).fetchall()
+        return summarize_day(opened, [dict(r) for r in rows])
 
     def load_open_trades(self, symbol: Optional[str] = None) -> list[PaperTrade]:
         """Restore trades still marked open (after a process restart)."""

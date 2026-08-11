@@ -25,7 +25,7 @@ from .market_data import BinanceSource
 from .models import Candle
 from .news import NewsService
 from .notifier import (ConsoleNotifier, DailyQuota, LineNotifier, TelegramNotifier,
-                       format_close, format_signal)
+                       format_close, format_daily_summary, format_signal)
 from .paper_trading import PaperBroker, attach_exit_market, entry_from_signal
 from .pipeline import SignalPipeline
 from .risk import PortfolioState
@@ -220,6 +220,39 @@ def _edge_lab_tick(interval_hours: float) -> bool:
         reg.close()
 
 
+def _fetch_daily_summary(since_ms: int, until_ms: int) -> dict:
+    """เปิด journal ใหม่ในเธรด (ไม่ชนกับ connection ของ loop หลัก) แล้วดึงสรุป"""
+    from .store import open_journal
+    j = open_journal()
+    try:
+        return j.daily_summary(since_ms, until_ms)
+    finally:
+        j.close()
+
+
+async def _daily_summary_loop(notifier, hour_utc: int = 11) -> None:
+    """ส่งสรุปเหตุการณ์รอบวันเข้า LINE ทุกวันเวลา hour_utc (default 11:00 UTC = 18:00 ไทย)
+
+    ตื่นที่เวลาถัดไปเสมอ: ถ้าตอนนี้เลยเวลาวันนี้แล้ว → นัดพรุ่งนี้ (ทน restart ไม่ส่งซ้ำ
+    เพราะรีสตาร์ทหลังส่ง = now ≥ เวลา → เด้งไปพรุ่งนี้)
+    """
+    from datetime import datetime, timedelta, timezone
+    while True:
+        now = datetime.now(timezone.utc)
+        nxt = now.replace(hour=hour_utc, minute=0, second=0, microsecond=0)
+        if now >= nxt:
+            nxt += timedelta(days=1)
+        await asyncio.sleep((nxt - now).total_seconds())
+        try:
+            until = int(datetime.now(timezone.utc).timestamp() * 1000)
+            since = until - 86_400_000
+            summ = await asyncio.to_thread(_fetch_daily_summary, since, until)
+            await notifier.send(format_daily_summary(summ, since, until))
+            print(f"[summary] ส่งสรุปรอบวันแล้ว (ปิด {summ['closed']} ไม้)")
+        except Exception as e:
+            print(f"[summary] ข้าม: {e!r}")
+
+
 async def _edge_lab_loop(interval_hours: float) -> None:
     """เฝ้าเวลาในโปรเซส worker (ทางเลือกแทน cron service แยก ที่ Railway trial
     ทำไม่ได้เพราะจำกัด 1 service) — poll ทุกชั่วโมง รันเมื่อครบรอบ best-effort"""
@@ -283,6 +316,12 @@ async def run() -> None:
         interval = float(os.environ.get("EDGE_LAB_INTERVAL_HOURS", 168))  # สัปดาห์ละครั้ง
         print(f"[startup] Edge Lab ในโปรเซส: เปิด (ทุก {interval:.0f} ชม.)")
         tasks.append(_edge_lab_loop(interval))
+
+    # สรุปเหตุการณ์รอบวันเข้า LINE (default 11:00 UTC = 18:00 ไทย) ปิดด้วย DAILY_SUMMARY=false
+    if journal and os.environ.get("DAILY_SUMMARY", "true").lower() != "false":
+        hour = int(os.environ.get("DAILY_SUMMARY_HOUR_UTC", 11))
+        print(f"[startup] สรุปรอบวัน: เปิด (ส่ง {hour:02d}:00 UTC = {(hour+7) % 24:02d}:00 ไทย)")
+        tasks.append(_daily_summary_loop(notifier, hour))
 
     await asyncio.gather(*tasks, return_exceptions=True)  # one failing task must not kill others
 

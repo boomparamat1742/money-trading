@@ -180,6 +180,38 @@ def format_close(t) -> str:
     return "\n".join(lines)
 
 
+EXIT_LABEL_TH = {"tp": "ถึงเป้า", "sl_initial": "โดน SL", "sl_trailing": "trailing",
+                 "expired": "หมดเวลา"}
+
+
+def format_daily_summary(s: dict, since_ms: int, until_ms: int) -> str:
+    """สรุปเหตุการณ์ทางเทคนิครอบวัน (paper) — ส่ง 18:00 น. ไทย"""
+    import time
+    lo = time.strftime("%d/%m %H:%M", time.localtime(since_ms / 1000))
+    hi = time.strftime("%H:%M", time.localtime(until_ms / 1000))
+    lines = [
+        f"📊 สรุปเหตุการณ์ทางเทคนิค (paper)",
+        f"รอบ {lo} → {hi} น. (24 ชม.)",
+        f"เปิดสัญญาณ: {s['opened']} ไม้ · ปิดแล้ว: {s['closed']} ไม้",
+    ]
+    if s["closed"]:
+        lines.append(f"ชนะ/แพ้: {s['wins']}/{s['losses']} ({s['win_rate']}%) · "
+                     f"เฉลี่ย {s['avg_rr']:+.2f}R")
+        lines.append(f"PnL รวม (paper): {s['net_pnl']:+.4f}")
+        if s["by_exit"]:
+            parts = [f"{EXIT_LABEL_TH.get(k, k)} {v}" for k, v in
+                     sorted(s["by_exit"].items(), key=lambda kv: -kv[1])]
+            lines.append("ปิดเพราะ: " + " · ".join(parts))
+        if s["best"] and s["worst"]:
+            lines.append(f"ดีสุด {s['best']['symbol']} {s['best']['rr']:+.2f}R · "
+                         f"แย่สุด {s['worst']['symbol']} {s['worst']['rr']:+.2f}R")
+    else:
+        lines.append("(ไม่มีไม้ปิดในรอบนี้)")
+    lines += ["─────────────",
+              "⚠️ paper only · ยังไม่พิสูจน์ว่ามี edge · ไม่ใช่คำแนะนำการลงทุน"]
+    return "\n".join(lines)
+
+
 class Notifier:
     async def send(self, text: str) -> bool:  # pragma: no cover - interface
         raise NotImplementedError

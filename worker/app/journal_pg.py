@@ -146,6 +146,21 @@ class PostgresJournal:
 
     close_trade = update_trade
 
+    def daily_summary(self, since_ms: int, until_ms: int) -> dict[str, Any]:
+        from .journal import summarize_day
+        with self.conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM trades WHERE opened_at >= %s AND opened_at < %s",
+                        (since_ms, until_ms))
+            opened = cur.fetchone()[0]
+            cur.execute(
+                """SELECT symbol, pnl_amount, actual_rr, exit_reason FROM trades
+                   WHERE closed_at >= %s AND closed_at < %s
+                   AND status IN ('hit_tp','hit_sl','expired')""",
+                (since_ms, until_ms))
+            cols = ["symbol", "pnl_amount", "actual_rr", "exit_reason"]
+            rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+        return summarize_day(opened, rows)
+
     def load_open_trades(self, symbol: Optional[str] = None) -> list[PaperTrade]:
         sql = ("SELECT id, signal_id, symbol, side, status, requested_entry, filled_entry,"
                " stop_loss, take_profit, position_size, risk_amount, risk_pct, entry_fee,"
