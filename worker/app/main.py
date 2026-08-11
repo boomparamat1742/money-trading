@@ -156,8 +156,9 @@ async def run_symbol(symbol, s, pipeline, htf, last_warm, broker, quality,
         open_trades.append(trade)
         portfolio.open_trades += 1
         portfolio.open_risk_pct += decision.risk_pct or 0.0
-        await notifier.send(format_signal(sig))
-        print(f"[signal] {sig.direction.value} {symbol} score={sig.signal_score} @ {sig.entry_price}")
+        await notifier.send(format_signal(sig, ref=trade.db_id))
+        print(f"[signal] ไม้ #{trade.db_id} {sig.direction.value} {symbol} "
+              f"score={sig.signal_score} @ {sig.entry_price}")
 
         if s.ai_enabled:
             try:
@@ -169,7 +170,7 @@ async def run_symbol(symbol, s, pipeline, htf, last_warm, broker, quality,
                     note = ctx.get("summary", "")
                     if ctx.get("conflict_with_signal"):
                         note = "⚠️ ข่าวขัดแย้งกับสัญญาณ — " + note
-                    await notifier.send(format_signal(sig, ai_note=note))
+                    await notifier.send(format_signal(sig, ai_note=note, ref=trade.db_id))
             except Exception as e:
                 print(f"[ai] {symbol} context skipped: {e!r}")
 

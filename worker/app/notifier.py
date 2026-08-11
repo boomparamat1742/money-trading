@@ -71,10 +71,12 @@ def format_vwap(ind: dict) -> Optional[str]:
             f"  ⓘ ข้อมูลประกอบ (ยังไม่ใช้ตัดสินใจ) · รีเซ็ต 00:00 UTC")
 
 
-def format_signal(sig: Signal, ai_note: Optional[str] = None) -> str:
+def format_signal(sig: Signal, ai_note: Optional[str] = None,
+                  ref: Optional[int] = None) -> str:
     d = "LONG" if sig.direction.value == "long" else "SHORT"
+    tag = f"ไม้ #{ref} · " if ref is not None else ""   # เลขไม้เดียวกับตอนปิด → จับคู่ได้
     lines = [
-        f"🔔 เหตุการณ์ทางเทคนิค [{sig.symbol}] {d} — {sig.strategy_name}",
+        f"🔔 {tag}เหตุการณ์ทางเทคนิค [{sig.symbol}] {d} — {sig.strategy_name}",
         f"Score: {sig.signal_score}/100 ({', '.join(sig.trigger_reasons) or '-'})",
     ]
     if sig.entry_price is not None:
@@ -128,16 +130,18 @@ def format_close(t) -> str:
     icon = {"tp": "🟢", "sl_trailing": "🟡", "sl_initial": "🔴"}.get(reason, "⚪")
     side = t.side.value.upper() if hasattr(t.side, "value") else str(t.side).upper()
 
-    lines = [f"{icon} [{t.symbol}] ปิดสถานะ {side} — {EXIT_REASON_TH.get(reason, reason)}"]
+    # เลขไม้อยู่หัวข้อความ — ตรงกับ "ไม้ #N" ตอนเปิด เพื่อจับคู่ได้ทันที
+    tag = f"ไม้ #{t.db_id} · " if t.db_id else ""
+    lines = [f"{icon} {tag}[{t.symbol}] ปิดสถานะ {side} — {EXIT_REASON_TH.get(reason, reason)}"]
 
-    # ระบุว่าเป็นไม้ไหน — ให้ย้อนไปหาข้อความ "เปิด" ที่ตรงกันได้
-    ident = f"ไม้ #{t.db_id}" if t.db_id else "ไม้"
+    detail = []
     if t.opened_at:
         import time
-        ident += " · เปิด " + time.strftime("%d/%m %H:%M", time.localtime(t.opened_at / 1000))
+        detail.append("เปิด " + time.strftime("%d/%m %H:%M", time.localtime(t.opened_at / 1000)))
     if t.filled_entry:
-        ident += f" ที่ {fmt_price(t.filled_entry)}"
-    lines.append(ident)
+        detail.append(f"ที่ {fmt_price(t.filled_entry)}")
+    if detail:
+        lines.append("  (" + " · ".join(detail) + ")")
 
     # เข้าไม้นี้เพราะอะไร — สูตร/เงื่อนไขที่จุดชนวน
     ent = t.entry_context or {}

@@ -140,3 +140,11 @@ def test_alert_does_not_print_raw_float_tails():
     assert "ระดับ SL (อ้างอิง): 1,918.43" in msg
     assert "ระดับ TP (อ้างอิง): 1,926.10" in msg
     assert "1918.43417632" not in msg
+
+
+def test_open_alert_shows_trade_ref_to_match_the_close():
+    """ข้อความเปิดต้องมี "ไม้ #N" เดียวกับตอนปิด ไม่งั้นจับคู่ไม่ได้ (งง)"""
+    with_ref = format_signal(_signal(100.0, 98.0, 106.0), ref=42)
+    assert "ไม้ #42" in with_ref
+    no_ref = format_signal(_signal(100.0, 98.0, 106.0))
+    assert "ไม้ #" not in no_ref              # ไม่มี ref (เช่น console) ก็ไม่พัง
