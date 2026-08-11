@@ -75,12 +75,18 @@ def entry_from_signal(sig) -> dict:
     ตอนปิดต้องใช้ค่านี้ทันที รวมถึงไม้ที่กู้คืนมาหลังรีสตาร์ท และ (ข) backtest
     ไม่มีตาราง signals เลย
     """
+    ind = sig.indicators or {}
+    # feature ที่เก็บไว้วิเคราะห์ expectancy รายกลุ่มทีหลัง (v1.2.0 feature list)
+    feat_keys = ("vwap_dist_pct", "vwap_zscore", "trend_extension", "ema20_dist_atr",
+                 "ema50_dist_atr", "adx", "adx_slope", "macd_hist", "macd_hist_slope",
+                 "atr_percentile", "rsi", "vol_zscore", "vol_ratio")
     return {
         "strategy": sig.strategy_name,
         "version": sig.strategy_version,
         "score": sig.signal_score,
         "reasons": list(sig.trigger_reasons or []),
         "regime": (sig.market_regime or {}).get("regime"),
+        "features": {k: round(ind[k], 6) for k in feat_keys if k in ind},
     }
 
 

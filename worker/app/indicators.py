@@ -176,6 +176,8 @@ class IndicatorEngine:
     def __init__(self, maxlen: int = 320):  # ≥ EMA200 warmup; smaller = faster recompute
         self._c: deque[Candle] = deque(maxlen=maxlen)
         self._atr_hist: deque[float] = deque(maxlen=200)  # for ATR percentile
+        self._prev_adx: Optional[float] = None            # for adx_slope
+        self._prev_mh: Optional[float] = None             # for macd_hist_slope
 
     @property
     def count(self) -> int:
@@ -237,6 +239,31 @@ class IndicatorEngine:
             v["vwap_lower2"] = vw["vwap"] - 2 * vw["sd"]
             if vw["vwap"]:
                 v["vwap_dist_pct"] = (closes[-1] - vw["vwap"]) / vw["vwap"] * 100
+            if vw["sd"] and vw["sd"] > 0:
+                v["vwap_zscore"] = (closes[-1] - vw["vwap"]) / vw["sd"]
+
+        # derived features สำหรับวิจัย (feature list ใน v1.2.0) — เก็บติดทุกสัญญาณ
+        # เพื่อดู expectancy รายกลุ่มเมื่อครบหลายร้อยไม้ (ไม่ใช่แก้กลยุทธ์ตอนนี้)
+        close, atr_v = v.get("close"), v.get("atr")   # atr_v: เลี่ยงทับฟังก์ชัน atr()
+        e20, e50 = v.get("ema20"), v.get("ema50")
+        if atr_v and atr_v > 0 and close is not None:
+            if e20 is not None:
+                v["ema20_dist_atr"] = (close - e20) / atr_v       # +เหนือ / −ใต้ EMA20
+                v["trend_extension"] = abs(close - e20) / atr_v   # ไกล EMA20 = เข้าสายไหม
+            if e50 is not None:
+                v["ema50_dist_atr"] = (close - e50) / atr_v
+        if "adx" in v and self._prev_adx is not None:
+            v["adx_slope"] = v["adx"] - self._prev_adx           # เทรนด์เร่งขึ้น/อ่อนลง
+        if "macd_hist" in v and self._prev_mh is not None:
+            v["macd_hist_slope"] = v["macd_hist"] - self._prev_mh
+        self._prev_adx = v.get("adx", self._prev_adx)
+        self._prev_mh = v.get("macd_hist", self._prev_mh)
+        if len(vols) >= 20:
+            vstd = pstdev(vols[-20:])
+            vma = v.get("vol_ma20")
+            if vstd > 0 and vma is not None:
+                v["vol_zscore"] = (vols[-1] - vma) / vstd
+
         hh = max(highs[-20:]) if len(highs) >= 20 else None
         ll = min(lows[-20:]) if len(lows) >= 20 else None
         if hh is not None:
