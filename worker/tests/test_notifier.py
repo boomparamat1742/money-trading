@@ -1,8 +1,8 @@
 import asyncio
 
 from worker.app.models import Direction, Signal
-from worker.app.notifier import (DailyQuota, Notifier, fmt_price, format_signal,
-                                 suggest_leverage)
+from worker.app.notifier import (DailyQuota, DiscordNotifier, Notifier, fmt_price,
+                                 format_signal, suggest_leverage)
 
 
 class _Fake(Notifier):
@@ -169,6 +169,48 @@ def test_alert_does_not_print_raw_float_tails():
     assert "ระดับ SL (อ้างอิง): 1,918.43" in msg
     assert "ระดับ TP (อ้างอิง): 1,926.10" in msg
     assert "1918.43417632" not in msg
+
+
+class _FakeResp:
+    def __init__(self, status, body=None):
+        self.status, self._body = status, body or {}
+
+    async def __aenter__(self): return self
+    async def __aexit__(self, *a): return False
+    async def json(self): return self._body
+    async def text(self): return str(self._body)
+
+
+class _FakeSession:
+    def __init__(self, resp): self._resp = resp
+
+    async def __aenter__(self): return self
+    async def __aexit__(self, *a): return False
+    def post(self, *a, **k): return self._resp
+
+
+def test_discord_treats_204_as_success(monkeypatch):
+    """webhook สำเร็จคืน 204 (ไม่ใช่ 200) — ถ้าเช็คแค่ 200 จะเข้าใจผิดว่าล้มเหลว"""
+    import aiohttp
+    monkeypatch.setattr(aiohttp, "ClientSession", lambda *a, **k: _FakeSession(_FakeResp(204)))
+    assert asyncio.run(DiscordNotifier("https://discord.com/api/webhooks/1/x").send("hi")) is True
+
+
+def test_discord_gives_up_on_bad_webhook(monkeypatch):
+    """404 = webhook ถูกลบ/ผิด — ต้องเลิก ไม่วนลองใหม่ให้เสียเวลา"""
+    import aiohttp
+    monkeypatch.setattr(aiohttp, "ClientSession", lambda *a, **k: _FakeSession(_FakeResp(404, "not found")))
+    assert asyncio.run(DiscordNotifier("https://discord.com/api/webhooks/1/x").send("hi")) is False
+
+
+def test_build_notifier_prefers_discord_when_webhook_set(monkeypatch):
+    """ตั้ง DISCORD_WEBHOOK_URL ต้องสลับมา Discord แม้ LINE creds ยังอยู่"""
+    from worker.app.main import build_notifier
+    monkeypatch.setenv("DISCORD_WEBHOOK_URL", "https://discord.com/api/webhooks/1/x")
+
+    class S:
+        line_channel_token, line_to = "tok", "u"
+    assert isinstance(build_notifier(S()), DiscordNotifier)
 
 
 def test_open_alert_shows_trade_ref_to_match_the_close():

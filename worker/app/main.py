@@ -24,8 +24,8 @@ from .store import database_url, open_journal
 from .market_data import BinanceSource
 from .models import Candle
 from .news import NewsService
-from .notifier import (ConsoleNotifier, DailyQuota, LineNotifier, TelegramNotifier,
-                       format_close, format_daily_summary, format_signal)
+from .notifier import (ConsoleNotifier, DailyQuota, DiscordNotifier, LineNotifier,
+                       TelegramNotifier, format_close, format_daily_summary, format_signal)
 from .paper_trading import PaperBroker, attach_exit_market, entry_from_signal
 from .pipeline import SignalPipeline
 from .risk import PortfolioState
@@ -48,6 +48,12 @@ def confirm_tfs(s) -> list[str]:
 def build_notifier(s):
     import os
     cap = int(os.environ.get("NOTIFY_MAX_PER_DAY", 20))
+    # Discord webhook มาก่อน: ตั้ง DISCORD_WEBHOOK_URL = สลับมาใช้ทันที (ฟรี ไม่จำกัด)
+    # โดยไม่ต้องลบ LINE creds — เอาออกเมื่อไหร่ก็กลับไป LINE เอง
+    discord = os.environ.get("DISCORD_WEBHOOK_URL", "")
+    if discord:
+        print("[startup] notifier: Discord webhook (ฟรี ไม่จำกัดโควตา)")
+        return DiscordNotifier(discord)
     if s.line_channel_token and s.line_to:
         print(f"[startup] notifier: LINE Messaging API (cap {cap} msgs/day)")
         return DailyQuota(LineNotifier(s.line_channel_token, s.line_to), cap)

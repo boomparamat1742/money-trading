@@ -397,3 +397,41 @@ class TelegramNotifier(Notifier):
                 print(f"[telegram] send failed (attempt {attempt + 1}): {e!r}")
             await asyncio.sleep(1.5 * (attempt + 1))
         return False
+
+
+class DiscordNotifier(Notifier):
+    """แจ้งเตือนผ่าน Discord webhook — ฟรี ไม่มีโควตารายเดือนแบบ LINE
+
+    ใช้ webhook URL อย่างเดียว ไม่ต้องสร้าง bot: ตั้งค่าเซิร์ฟเวอร์ → Integrations
+    → Webhooks → New Webhook → Copy URL แล้วใส่ DISCORD_WEBHOOK_URL
+    """
+
+    def __init__(self, webhook_url: str):
+        self.webhook_url = webhook_url
+
+    async def send(self, text: str, priority: str = "normal") -> bool:
+        import aiohttp
+
+        payload = {"content": text[:1990]}          # Discord จำกัด 2000 ตัวอักษร/ข้อความ
+        for attempt in range(3):
+            try:
+                async with aiohttp.ClientSession() as s:
+                    async with s.post(self.webhook_url, json=payload,
+                                      timeout=aiohttp.ClientTimeout(total=15)) as r:
+                        if r.status in (200, 204):   # webhook สำเร็จคืน 204 (ไม่ใช่ 200)
+                            return True
+                        if r.status == 429:          # โดน rate limit → รอตามที่บอกแล้วลองใหม่
+                            try:
+                                wait = float((await r.json()).get("retry_after", 2))
+                            except Exception:
+                                wait = 2.0
+                            await asyncio.sleep(min(wait, 10))
+                            continue
+                        body = await r.text()
+                        print(f"[discord] HTTP {r.status}: {body[:200]}")
+                        if r.status in (400, 401, 403, 404):
+                            return False             # webhook ผิด/ถูกลบ — ลองใหม่ก็ไม่ช่วย
+            except Exception as e:
+                print(f"[discord] send failed (attempt {attempt + 1}): {e!r}")
+            await asyncio.sleep(1.5 * (attempt + 1))
+        return False
