@@ -184,7 +184,7 @@ EXIT_LABEL_TH = {"tp": "ถึงเป้า", "sl_initial": "โดน SL", "s
                  "expired": "หมดเวลา"}
 
 
-def format_daily_summary(s: dict, since_ms: int, until_ms: int) -> str:
+def format_daily_summary(s: dict, since_ms: int, until_ms: int, suppressed: int = 0) -> str:
     """สรุปเหตุการณ์ทางเทคนิครอบวัน (paper) — ส่ง 18:00 น. ไทย"""
     import time
     lo = time.strftime("%d/%m %H:%M", time.localtime(since_ms / 1000))
@@ -207,13 +207,15 @@ def format_daily_summary(s: dict, since_ms: int, until_ms: int) -> str:
                          f"แย่สุด {s['worst']['symbol']} {s['worst']['rr']:+.2f}R")
     else:
         lines.append("(ไม่มีไม้ปิดในรอบนี้)")
+    if suppressed:
+        lines.append(f"🔕 งดแจ้งเตือนสัญญาณเปิด {suppressed} ครั้ง (สงวนโควตา LINE) — ดูครบใน journal")
     lines += ["─────────────",
               "⚠️ paper only · ยังไม่พิสูจน์ว่ามี edge · ไม่ใช่คำแนะนำการลงทุน"]
     return "\n".join(lines)
 
 
 class Notifier:
-    async def send(self, text: str) -> bool:  # pragma: no cover - interface
+    async def send(self, text: str, priority: str = "normal") -> bool:  # pragma: no cover
         raise NotImplementedError
 
 
@@ -230,16 +232,22 @@ class DailyQuota(Notifier):
     """
 
     def __init__(self, inner: Notifier, max_per_day: int,
-                 monthly_reserve: int = 20, refresh_every: int = 10):
+                 monthly_reserve: int = 15, low_floor: int = 50, refresh_every: int = 10):
         self.inner = inner
         self.max_per_day = max_per_day
-        self.monthly_reserve = monthly_reserve   # กันไว้ให้ข้อความเตือนตัวเอง
+        self.monthly_reserve = monthly_reserve   # ต่ำกว่านี้หยุดทุกอย่าง (แม้ high)
+        self.low_floor = low_floor               # ต่ำกว่านี้ส่งเฉพาะ high (สงวนให้ SL/ปิด/สรุป)
         self.refresh_every = refresh_every       # ถามยอดจริงทุกกี่ข้อความ
         self._day: Optional[int] = None
         self._sent = 0
+        self._suppressed = 0                     # นับข้อความที่งดในวันนี้ (ไว้รายงานในสรุป)
         self._since_refresh = 10**9              # ครั้งแรกถามทันที
         self._remaining: Optional[int] = None    # None = ไม่รู้ (ไม่บล็อก)
         self._warned_month = False
+
+    def pop_suppressed(self) -> int:
+        n, self._suppressed = self._suppressed, 0
+        return n
 
     async def _refresh(self) -> None:
         getter = getattr(self.inner, "quota", None)
@@ -258,38 +266,49 @@ class DailyQuota(Notifier):
         print(f"[notify] โควตา LINE เดือนนี้: ใช้ไป {q['used']}/{q['limit']} "
               f"เหลือ {q['remaining']}")
 
-    async def send(self, text: str) -> bool:
+    async def send(self, text: str, priority: str = "normal") -> bool:
+        """priority "high" = ปิด/SL/สรุป/error → สงวนโควตาไว้ให้เสมอ
+        "normal"/"low" = สัญญาณเปิด → งดก่อนเมื่อโควตาใกล้หมด (จะได้ไม่พลาด SL/ปิด)"""
         import time
         day = int(time.time() // 86_400)
         if self._day != day:
-            self._day, self._sent = day, 0
+            self._day, self._sent, self._suppressed = day, 0, 0
 
         if self._since_refresh >= self.refresh_every:
             await self._refresh()
 
-        if self._remaining is not None and self._remaining <= self.monthly_reserve:
+        high = priority == "high"
+        rem = self._remaining
+
+        # โควตาเดือนใกล้หมดจริง → หยุดทุกอย่าง (แม้ high) กัน LINE ตัดกลางคัน
+        if rem is not None and rem <= self.monthly_reserve:
             if not self._warned_month:
                 self._warned_month = True
-                print(f"[notify] โควตา LINE รายเดือนใกล้หมด (เหลือ {self._remaining}) "
-                      f"— หยุดส่งจนกว่าจะขึ้นเดือนใหม่")
-            print(f"[notify] ไม่ได้ส่ง:\n{text}\n")
+                print(f"[notify] โควตา LINE รายเดือนใกล้หมด (เหลือ {rem}) — หยุดส่ง")
+            self._suppressed += 1
+            print(f"[notify] งด ({priority}):\n{text}\n")
             return False
 
-        if self._sent >= self.max_per_day:
-            print(f"[notify] ครบเพดาน {self.max_per_day} ข้อความ/วัน — ไม่ได้ส่ง:\n{text}\n")
-            return False
+        if not high:
+            # สงวนโควตาช่วง low_flo..monthly_reserve ให้ข้อความสำคัญ
+            if rem is not None and rem <= self.low_floor:
+                self._suppressed += 1
+                print(f"[notify] โควตาเหลือ {rem} — สงวนให้ข้อความสำคัญ งดสัญญาณเปิด\n")
+                return False
+            if self._sent >= self.max_per_day:
+                self._suppressed += 1
+                print(f"[notify] ครบเพดาน {self.max_per_day}/วัน — งดสัญญาณเปิด\n")
+                return False
 
         self._sent += 1
         self._since_refresh += 1
         if self._remaining is not None:
             self._remaining -= 1                 # ประมาณการระหว่างรอ refresh
-        if self._sent == self.max_per_day:
-            text += f"\n\n(ถึงเพดาน {self.max_per_day} ข้อความ/วันแล้ว — ข้อความถัดไปจะขึ้นเฉพาะใน log)"
         return await self.inner.send(text)
 
 
 class ConsoleNotifier(Notifier):
-    async def send(self, text: str) -> bool:
+    async def send(self, text: str, priority: str = "normal") -> bool:
         print("── NOTIFY ──\n" + text + "\n")
         return True
 
@@ -333,7 +352,7 @@ class LineNotifier(Notifier):
                 used = int((await r.json()).get("totalUsage", 0))
         return {"limit": limit, "used": used, "remaining": max(0, limit - used)}
 
-    async def send(self, text: str) -> bool:
+    async def send(self, text: str, priority: str = "normal") -> bool:
         import aiohttp
 
         headers = {"Authorization": f"Bearer {self.channel_token}",
@@ -363,7 +382,7 @@ class TelegramNotifier(Notifier):
     def __init__(self, token: str, chat_id: str):
         self.token, self.chat_id = token, chat_id
 
-    async def send(self, text: str) -> bool:
+    async def send(self, text: str, priority: str = "normal") -> bool:
         import aiohttp
 
         url = f"https://api.telegram.org/bot{self.token}/sendMessage"

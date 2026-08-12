@@ -9,7 +9,7 @@ class _Fake(Notifier):
     def __init__(self):
         self.sent = []
 
-    async def send(self, text: str) -> bool:
+    async def send(self, text: str, priority: str = "normal") -> bool:
         self.sent.append(text)
         return True
 
@@ -19,8 +19,7 @@ def test_daily_quota_caps_messages():
     q = DailyQuota(inner, max_per_day=3)
     results = [asyncio.run(q.send(f"m{i}")) for i in range(5)]
     assert results == [True, True, True, False, False]
-    assert len(inner.sent) == 3          # only 3 actually delivered
-    assert "เพดาน" in inner.sent[-1]      # last delivered message warns about the cap
+    assert inner.sent == ["m0", "m1", "m2"]      # เกินเพดานถูกงด
 
 
 def test_daily_quota_resets_next_day(monkeypatch):
@@ -59,6 +58,36 @@ def test_daily_cap_still_applies_when_monthly_quota_is_healthy():
     q = DailyQuota(inner, max_per_day=2, monthly_reserve=20)
     assert [asyncio.run(q.send(f"m{i}")) for i in range(4)] == [True, True, False, False]
     assert len(inner.sent) == 2
+
+
+def test_high_priority_bypasses_daily_cap_but_normal_does_not():
+    """SL/ปิด/สรุป (high) ต้องได้เสมอ แม้สัญญาณเปิดชนเพดานรายวันแล้ว"""
+    inner = _WithQuota(remaining=400)
+    q = DailyQuota(inner, max_per_day=2)
+    asyncio.run(q.send("open1"))            # normal
+    asyncio.run(q.send("open2"))            # normal → ครบเพดาน 2
+    assert asyncio.run(q.send("open3")) is False              # normal ถูกงด
+    assert asyncio.run(q.send("ปิด #5 SL", priority="high")) is True  # high ยังส่งได้
+    assert "ปิด #5 SL" in inner.sent
+
+
+def test_low_floor_reserves_quota_for_high_priority():
+    """เหลือระหว่าง low_floor..reserve → งดสัญญาณเปิด แต่ยังส่ง SL/ปิด"""
+    inner = _WithQuota(remaining=30)
+    q = DailyQuota(inner, max_per_day=100, monthly_reserve=15, low_floor=50)
+    assert asyncio.run(q.send("open", priority="normal")) is False    # 30 ≤ 50 → งด
+    assert asyncio.run(q.send("SL close", priority="high")) is True   # high ยังผ่าน
+    assert inner.sent == ["SL close"]
+
+
+def test_suppressed_count_tracked_for_summary():
+    inner = _WithQuota(remaining=30)
+    q = DailyQuota(inner, max_per_day=100, low_floor=50)
+    asyncio.run(q.send("open1"))            # งด
+    asyncio.run(q.send("open2"))            # งด
+    asyncio.run(q.send("SL", priority="high"))   # ส่ง
+    assert q.pop_suppressed() == 2
+    assert q.pop_suppressed() == 0          # reset หลังอ่าน
 
 
 def test_quota_is_re_read_periodically_not_every_message():

@@ -142,7 +142,7 @@ async def run_symbol(symbol, s, pipeline, htf, last_warm, broker, quality,
                 journal.close_trade(t)
             print(f"[close] {t.symbol} {t.exit_reason} "
                   f"({t.exit_context.get('pattern')}) pnl={t.pnl_amount}")
-            await notifier.send(format_close(t))
+            await notifier.send(format_close(t), priority="high")   # ปิด/SL สำคัญ ต้องได้เสมอ
 
         if not sig or sig.status != "approved":
             continue
@@ -156,7 +156,7 @@ async def run_symbol(symbol, s, pipeline, htf, last_warm, broker, quality,
         open_trades.append(trade)
         portfolio.open_trades += 1
         portfolio.open_risk_pct += decision.risk_pct or 0.0
-        await notifier.send(format_signal(sig, ref=trade.db_id))
+        await notifier.send(format_signal(sig, ref=trade.db_id), priority="normal")  # เปิด = งดก่อนถ้าโควตาตึง
         print(f"[signal] ไม้ #{trade.db_id} {sig.direction.value} {symbol} "
               f"score={sig.signal_score} @ {sig.entry_price}")
 
@@ -170,7 +170,8 @@ async def run_symbol(symbol, s, pipeline, htf, last_warm, broker, quality,
                     note = ctx.get("summary", "")
                     if ctx.get("conflict_with_signal"):
                         note = "⚠️ ข่าวขัดแย้งกับสัญญาณ — " + note
-                    await notifier.send(format_signal(sig, ai_note=note, ref=trade.db_id))
+                    await notifier.send(format_signal(sig, ai_note=note, ref=trade.db_id),
+                                        priority="low")   # AI context เป็นข้อมูลเสริม งดได้ก่อน
             except Exception as e:
                 print(f"[ai] {symbol} context skipped: {e!r}")
 
@@ -192,7 +193,7 @@ async def supervise(symbol, s, pipeline, htf, last_warm, broker, quality,
             print(f"[error] {symbol} watcher crashed: {e!r}; restart in {backoff}s")
             try:
                 await notifier.send(f"⚠️ ตัวเฝ้า {symbol} ขัดข้อง: {type(e).__name__} "
-                                    f"— กำลังรีสตาร์ทใน {backoff} วินาที")
+                                    f"— กำลังรีสตาร์ทใน {backoff} วินาที", priority="high")
             except Exception:
                 pass
             await asyncio.sleep(backoff)
@@ -247,7 +248,8 @@ async def _daily_summary_loop(notifier, hour_utc: int = 11) -> None:
             until = int(datetime.now(timezone.utc).timestamp() * 1000)
             since = until - 86_400_000
             summ = await asyncio.to_thread(_fetch_daily_summary, since, until)
-            await notifier.send(format_daily_summary(summ, since, until))
+            supp = notifier.pop_suppressed() if hasattr(notifier, "pop_suppressed") else 0
+            await notifier.send(format_daily_summary(summ, since, until, supp), priority="high")
             print(f"[summary] ส่งสรุปรอบวันแล้ว (ปิด {summ['closed']} ไม้)")
         except Exception as e:
             print(f"[summary] ข้าม: {e!r}")
@@ -302,7 +304,8 @@ async def run() -> None:
         f"อุ่นเครื่องด้วยข้อมูลย้อนหลังแล้ว — อินดิเคเตอร์พร้อม\n"
         f"risk รวมทุกเหรียญ: สูงสุด {s.risk.max_open_trades} ไม้พร้อมกัน\n"
         f"โหมด: Paper Trading (ไม่ส่งคำสั่งจริง)\nAI context: {'เปิด' if s.ai_enabled else 'ปิด'}\n"
-        f"{build_line()}"          # บอกว่า deploy ตัวไหนกำลังรัน — เช็คได้จากในไลน์เลย
+        f"{build_line()}",         # บอกว่า deploy ตัวไหนกำลังรัน — เช็คได้จากในไลน์เลย
+        priority="normal",
     )
     print(f"[startup] streaming {len(symbols)} symbols ... (Ctrl+C to stop)")
 
