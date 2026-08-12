@@ -20,7 +20,7 @@ from .config import load_settings
 from .data_quality import DataQualityChecker
 from .futures_data import fetch_oi_funding
 from .htf import MultiTimeframeTrend
-from .store import open_journal
+from .store import database_url, open_journal
 from .market_data import BinanceSource
 from .models import Candle
 from .news import NewsService
@@ -255,6 +255,34 @@ async def _daily_summary_loop(notifier, hour_utc: int = 11) -> None:
             print(f"[summary] ข้าม: {e!r}")
 
 
+def _merge_oi_tick() -> int:
+    """รวม OI สด (market_snapshots) → oi_history รายวัน — sync (บล็อกได้ โยนเข้าเธรด)"""
+    from scripts.merge_live_oi import merge_oi
+    from .store import database_url
+    dsn = database_url()
+    return merge_oi(dsn) if dsn else 0
+
+
+async def _merge_oi_loop(hour_utc: int = 23) -> None:
+    """รวม OI สดเข้า oi_history รายวัน ให้ series ต่อเนื่องโดยไม่ต้องรันมือ
+
+    ตั้งเวลาใกล้จบวัน UTC (23:00) เพื่อให้ OHLC ของวันนั้นเกือบครบ · ตื่นเวลาถัดไป
+    เสมอ ทน restart เหมือน _daily_summary_loop (upsert อยู่แล้ว รันซ้ำไม่พัง)
+    """
+    from datetime import datetime, timedelta, timezone
+    while True:
+        now = datetime.now(timezone.utc)
+        nxt = now.replace(hour=hour_utc, minute=0, second=0, microsecond=0)
+        if now >= nxt:
+            nxt += timedelta(days=1)
+        await asyncio.sleep((nxt - now).total_seconds())
+        try:
+            n = await asyncio.to_thread(_merge_oi_tick)
+            print(f"[mergeoi] รวม OI สด → oi_history: {n} วัน-เหรียญ", flush=True)
+        except Exception as e:
+            print(f"[mergeoi] ข้าม: {e!r}")
+
+
 async def _edge_lab_loop(interval_hours: float) -> None:
     """เฝ้าเวลาในโปรเซส worker (ทางเลือกแทน cron service แยก ที่ Railway trial
     ทำไม่ได้เพราะจำกัด 1 service) — poll ทุกชั่วโมง รันเมื่อครบรอบ best-effort"""
@@ -325,6 +353,13 @@ async def run() -> None:
         hour = int(os.environ.get("DAILY_SUMMARY_HOUR_UTC", 11))
         print(f"[startup] สรุปรอบวัน: เปิด (ส่ง {hour:02d}:00 UTC = {(hour+7) % 24:02d}:00 ไทย)")
         tasks.append(_daily_summary_loop(notifier, hour))
+
+    # รวม OI สด → oi_history รายวัน ให้ series ยาวขึ้นเอง (ต้องมี DATABASE_URL/Supabase)
+    # ปิดด้วย MERGE_OI=false
+    if database_url() and os.environ.get("MERGE_OI", "true").lower() != "false":
+        moi_hour = int(os.environ.get("MERGE_OI_HOUR_UTC", 23))
+        print(f"[startup] รวม OI สดรายวัน: เปิด (ทุก {moi_hour:02d}:00 UTC)")
+        tasks.append(_merge_oi_loop(moi_hour))
 
     await asyncio.gather(*tasks, return_exceptions=True)  # one failing task must not kill others
 

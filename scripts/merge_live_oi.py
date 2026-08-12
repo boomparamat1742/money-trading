@@ -32,16 +32,9 @@ def aggregate_daily(rows) -> dict:
     return out
 
 
-def main() -> None:
-    try:
-        sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
-    except Exception:
-        pass
-    from worker.app.store import database_url
-    dsn = database_url()
-    if not dsn:
-        print("ต้องมี DATABASE_URL (Supabase)")
-        return
+def merge_oi(dsn) -> int:
+    """ย่อ market_snapshots สดเป็น OHLC รายวัน แล้ว upsert เข้า oi_history
+    คืนจำนวน (วัน-เหรียญ) ที่รวม/อัปเดต · เรียกซ้ำได้ (worker เรียกรายวันได้)"""
     import psycopg
     with psycopg.connect(dsn, autocommit=True) as c, c.cursor() as cur:
         cur.execute("SELECT symbol, ts, open_interest_value FROM market_snapshots "
@@ -57,6 +50,20 @@ def main() -> None:
                          oi_low=EXCLUDED.oi_low, oi_close=EXCLUDED.oi_close""",
                 (sym, day, o, h, l, cl))
             n += 1
+    return n
+
+
+def main() -> None:
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    from worker.app.store import database_url
+    dsn = database_url()
+    if not dsn:
+        print("ต้องมี DATABASE_URL (Supabase)")
+        return
+    n = merge_oi(dsn)
     print(f"✅ รวม/อัปเดต {n} วัน-เหรียญ จาก live snapshots → oi_history")
     print("   (วันปัจจุบันยังไม่ครบวัน — รันซ้ำเรื่อยๆ จะอัปเดตให้)")
 
