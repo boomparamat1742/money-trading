@@ -302,6 +302,51 @@ class TrendFollowHTF(Hypothesis):
         return _equal_weight_market(data)
 
 
+class TrendFollowEarly(TrendFollowHTF):
+    """สมมติฐาน "เข้าเร็ว" — กลยุทธ์เดิมทุกอย่าง แต่ "ปฏิเสธสัญญาณ score สูง"
+    (ยืนยันแน่นเกิน = เทรนด์แก่/ยืดแล้ว) รับเฉพาะ score ≤ cap = จับเทรนด์ช่วงต้น
+
+    มาจากผลจริง: ไม้ score 90+ โดน SL 68% แต่ 65–69 โดน SL 50% — และในไม้ score
+    เดียวกัน ไม้ที่ ADX ต่ำกว่า (เทรนด์อ่อน/เพิ่งเริ่ม) กลับ TP มากกว่า สมมติฐานนี้
+    ทดสอบว่า "เข้าเร็ว" มี edge จริงบนข้อมูล 4h อิสระข้าม regime ไหม (ไม่ใช่แค่
+    ผลสัปดาห์เดียวบน 15m) — cap=999 = ไม่กรอง (baseline) ให้ walk-forward เทียบเอง
+    """
+    name = "trend_follow_early"
+    question = "กรอง 'เข้าเร็ว' (รับเฉพาะ score ต่ำ = เทรนด์เพิ่งเริ่ม) เพิ่ม edge บน 4h ไหม?"
+
+    def param_grid(self):
+        # sl/tp ตรึงที่ค่าจริง (1.5/3.0) เพื่อแยกผลของ "ตัวกรอง score" ล้วนๆ
+        return [{"sl": 1.5, "tp": 3.0, "score_cap": cap} for cap in (999, 75, 80, 85)]
+
+    def run(self, data, params):
+        from worker.app.config import Fees, RiskPolicy
+        from backtest.run_backtest import run as run_bt
+
+        cap = params["score_cap"]
+        entry_filter = lambda sig: (sig.signal_score or 0) <= cap
+        policy = RiskPolicy()
+        object.__setattr__(policy, "account_equity", self.EQUITY)
+        fees = Fees()
+        dates = data.dates
+        per_symbol_ret = []
+        held_any = {d: 0.0 for d in dates}
+        for sym, candles in data.bars.items():
+            if not candles:
+                continue
+            out = run_bt(candles, policy, fees, confirm_tfs=self.CONFIRM,
+                         sl_mult=params["sl"], tp_mult=params["tp"], entry_filter=entry_filter)
+            _, r, pos = _trades_to_daily(out.trades, dates, self.EQUITY)
+            per_symbol_ret.append(r)
+            for i, d in enumerate(dates):
+                if pos[i]:
+                    held_any[d] = 1.0
+        if not per_symbol_ret:
+            return [], [], []
+        n = len(per_symbol_ret)
+        port = [sum(col) / n for col in zip(*per_symbol_ret)]
+        return dates, port, [held_any[d] for d in dates]
+
+
 # ---------------------------------------------------------------- OI-confirmed
 def _oi_confirmed_daily(px: dict[int, float], oi: dict[int, float],
                         dates: list[int], L: int, cost: float):
@@ -390,5 +435,5 @@ class PriceOIConfirm(Hypothesis):
 
 REGISTRY: dict[str, type[Hypothesis]] = {
     h.name: h for h in (TSMomentum, XSMomentumMajors, XSMomentumSmallCap,
-                        FundingCarry, TrendFollowHTF, PriceOIConfirm)
+                        FundingCarry, TrendFollowHTF, TrendFollowEarly, PriceOIConfirm)
 }

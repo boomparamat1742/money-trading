@@ -34,7 +34,9 @@ class BacktestOutput:
 
 def run(candles: list[Candle], policy: RiskPolicy, fees: Fees,
         confirm_tfs: tuple[str, ...] = ("1h", "4h"), sl_mult: float = 1.5, tp_mult: float = 3.0,
-        trail_r_activate=1.0, trail_r_dist: float = 1.0) -> BacktestOutput:
+        trail_r_activate=1.0, trail_r_dist: float = 1.0, entry_filter=None) -> BacktestOutput:
+    """entry_filter(sig) -> bool : ถ้าให้มา จะเปิดไม้เฉพาะเมื่อคืน True — ใช้ทดสอบ
+    ตัวกรองเข้าไม้ (เช่น 'เข้าเร็ว' = รับเฉพาะ score ต่ำ) โดยไม่แตะ pipeline"""
     pipeline = SignalPipeline(policy, sl_mult=sl_mult, tp_mult=tp_mult)
     broker = PaperBroker(fees, trail_r_activate=trail_r_activate, trail_r_dist=trail_r_dist)
     htf = MultiTimeframeTrend(candles[0].timeframe, list(confirm_tfs)) if candles else None
@@ -72,7 +74,8 @@ def run(candles: list[Candle], policy: RiskPolicy, fees: Fees,
 
         # 3) evaluate a new signal on this closed bar
         sig = pipeline.process(c, portfolio, htf_trend=htf_trend)
-        if sig and sig.status == "approved" and hasattr(sig, "_decision"):
+        if (sig and sig.status == "approved" and hasattr(sig, "_decision")
+                and (entry_filter is None or entry_filter(sig))):
             decision = sig._decision  # type: ignore[attr-defined]
             t = broker.open(decision, sig.direction, c.symbol, None, c,
                             entry=entry_from_signal(sig))
