@@ -164,12 +164,6 @@ def session_vwap(candles: list[Candle], min_bars: int = VWAP_MIN_BARS) -> Option
     return {"vwap": vwap, "sd": variance ** 0.5, "bars": len(todays)}
 
 
-def roc(closes: list[float], n: int = 10) -> Optional[float]:
-    if len(closes) < n + 1 or closes[-n - 1] == 0:
-        return None
-    return (closes[-1] - closes[-n - 1]) / closes[-n - 1] * 100
-
-
 class IndicatorEngine:
     """Maintains a rolling window per symbol/timeframe and emits snapshots."""
 
@@ -221,9 +215,6 @@ class IndicatorEngine:
         adx_v, pdi, mdi = adx(highs, lows, closes)
         if adx_v is not None:
             v["adx"], v["plus_di"], v["minus_di"] = adx_v, pdi, mdi
-        rc = roc(closes)
-        if rc is not None:
-            v["roc"] = rc
         vma = sma(vols, 20)
         if vma is not None:
             v["vol_ma20"] = vma
