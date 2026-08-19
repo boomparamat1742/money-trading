@@ -164,6 +164,17 @@ def _signal(entry, sl, tp):
         position_size=0.0195632, risk_amount=0.05, risk_pct=0.5)
 
 
+def test_alert_warns_when_regime_unreliable():
+    """แจ้งซื่อสัตย์: sideway/ผันผวน → เตือนว่าเชื่อได้น้อย · เทรนด์ชัด → ไม่เตือน"""
+    sig = _signal(100.0, 98.0, 106.0)
+    sig.market_regime = {"regime": "sideway"}
+    assert "เชื่อได้น้อย" in format_signal(sig)
+    sig.market_regime = {"regime": "high_volatility"}
+    assert "เชื่อได้น้อย" in format_signal(sig)
+    sig.market_regime = {"regime": "uptrend"}
+    assert "เชื่อได้น้อย" not in format_signal(sig)
+
+
 def test_alert_does_not_print_raw_float_tails():
     msg = format_signal(_signal(1920.99, 1918.43417632, 1926.10164736))
     assert "ระดับ SL (อ้างอิง): 1,918.43" in msg

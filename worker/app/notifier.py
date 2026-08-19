@@ -107,8 +107,13 @@ def format_signal(sig: Signal, ai_note: Optional[str] = None,
     vwap_line = format_vwap(sig.indicators)
     if vwap_line:
         lines.append(vwap_line)
+    regime = sig.market_regime.get("regime")
+    lines.append(f"Regime: {regime}")
+    # แจ้งซื่อสัตย์: บอก "เมื่อไหร่สัญญาณเชื่อได้น้อย" — เทรนด์ตามได้ดีตอนตลาดมีเทรนด์
+    # แต่ sideway (~46% ของเวลา) / high_volatility สัญญาณเหวี่ยง เชื่อได้น้อยกว่ามาก
+    if regime in ("sideway", "high_volatility"):
+        lines.append("⚠️ ตลาดออกข้าง/ผันผวน — สัญญาณตามเทรนด์เชื่อได้น้อยกว่าปกติ")
     lines += [
-        f"Regime: {sig.market_regime.get('regime')}",
         f"AI Context: {ai_note or '-'}",
         "─────────────",
         "⚠️ สัญญาณเทคนิคเฝ้าตลาด · ยังไม่พิสูจน์ว่ามี edge (backtest OOS ไม่ผ่าน)",
