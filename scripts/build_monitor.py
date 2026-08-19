@@ -88,6 +88,9 @@ EXIT_TH = {"tp": "ถึงเป้า", "sl_initial": "SL เดิม", "sl_t
            "(none)": "ไม่ระบุ", "?": "?", "expired": "หมดเวลา"}
 EXIT_CLS = {"tp": "good", "sl_trailing": "warn", "sl_initial": "bad", "(none)": "mut", "?": "mut"}
 
+# แท็กเปิด legend (คำอธิบายศัพท์สั้นๆ ใต้ตาราง สำหรับคนทั่วไป)
+LEG = '<p class="mut sm" style="margin:8px 2px 2px;line-height:1.5">'
+
 
 def fetch():
     from worker.app.store import database_url
@@ -149,14 +152,14 @@ def render(d) -> str:
 
     # ── KPI tiles ──
     kpis = [
-        ("ปิดแล้ว", str(n), f"จากทั้งหมด {total} · เปิดค้าง {len(d['open'])}"),
-        ("Win rate", f"{winrate:.1f}%", f"ชนะ {w} · แพ้ {l}"),
-        ("Avg RR", f"{avg:+.3f}R", "ต่อไม้ (ก่อนหักฟีในเงินจริง)"),
-        ("Net PnL", f"{pnl:+.3f}", "หลังหักค่าธรรมเนียม"),
+        ("ปิดแล้ว (จบไม้)", str(n), f"จากทั้งหมด {total} · เปิดค้าง {len(d['open'])}"),
+        ("Win rate (ชนะกี่ %)", f"{winrate:.1f}%", f"ชนะ {w} · แพ้ {l}"),
+        ("Avg RR (กำไรเฉลี่ย/ที่เสี่ยง)", f"{avg:+.3f}R", "ต่อไม้ (ก่อนหักฟีในเงินจริง)"),
+        ("Net PnL (กำไรสุทธิ)", f"{pnl:+.3f}", "หลังหักค่าธรรมเนียม"),
     ]
     kpi_html = "".join(
         f'<div class="tile"><div class="lbl">{lbl}</div>'
-        f'<div class="big {"num-"+pnl_cls if lbl=="Net PnL" else ""}">{val}</div>'
+        f'<div class="big {"num-"+pnl_cls if lbl.startswith("Net") else ""}">{val}</div>'
         f'<div class="sub">{sub}</div></div>'
         for lbl, val, sub in kpis)
 
@@ -188,7 +191,9 @@ def render(d) -> str:
             f'<td class="mono num mut">{bars}</td></tr>'
             for i, sym, sd, ent, sl, tp, _op, bars in d["open"])
         open_html = (f'<table><thead><tr><th>#</th><th>เหรียญ</th><th>ทิศ</th><th>เข้า</th>'
-                     f'<th>SL</th><th>TP</th><th>แท่ง</th></tr></thead><tbody>{rows}</tbody></table>')
+                     f'<th>SL</th><th>TP</th><th>แท่ง</th></tr></thead><tbody>{rows}</tbody></table>'
+                     f'{LEG}ทิศ = LONG (เดาขึ้น)/SHORT (เดาลง) · เข้า = ราคาที่เข้า · '
+                     f'SL = จุดตัดขาดทุน · TP = จุดทำกำไร · แท่ง = ถือมากี่แท่ง 15 นาที</p>')
     else:
         open_html = '<p class="empty">ไม่มีไม้เปิดค้าง</p>'
 
@@ -200,7 +205,9 @@ def render(d) -> str:
         f'<td class="mono mut sm">{ts_th(ca)}</td></tr>'
         for i, sym, sd, rr, _p, er, ca in d["recent"])
     recent_html = (f'<table><thead><tr><th>#</th><th>เหรียญ</th><th>ทิศ</th><th>RR</th>'
-                   f'<th>ปิดเพราะ</th><th>เมื่อ</th></tr></thead><tbody>{rec}</tbody></table>')
+                   f'<th>ปิดเพราะ</th><th>เมื่อ</th></tr></thead><tbody>{rec}</tbody></table>'
+                   f'{LEG}RR = กำไรเทียบเงินที่เสี่ยง (+2R = ได้ 2 เท่าที่เสี่ยง · −1R = เสียเต็มที่เสี่ยง) · '
+                   f'ปิดเพราะ = เหตุผลที่ปิดไม้ (ถึงเป้า/โดน SL/trailing)</p>')
 
     # ── breakdown bars (by direction / exit / symbol) ──
     def bars(rows, label_i=0, n_i=1, rr_i=2, scale=2.0):
@@ -230,7 +237,10 @@ def render(d) -> str:
             f'<td class="mono num mut">{req:.2f}</td>'
             f'<td class="mono num mut sm">{oos_n or "–"}</td><td>{pill}</td></tr>')
     edge_html = (f'<table><thead><tr><th>สมมติฐาน</th><th>OOS</th><th>bench</th><th>เกณฑ์</th>'
-                 f'<th>n</th><th></th></tr></thead><tbody>{"".join(erows)}</tbody></table>')
+                 f'<th>n</th><th></th></tr></thead><tbody>{"".join(erows)}</tbody></table>'
+                 f'{LEG}ตัวเลขคือ Sharpe (ผลตอบแทนเทียบความเสี่ยง — ยิ่งสูงยิ่งดี) · '
+                 f'OOS = คะแนนนอกช่วงที่จูน (ของจริง) · bench = ถือเฉยๆ · '
+                 f'เกณฑ์ = ต้องเกินเท่านี้ถึงผ่าน · n = จำนวนวันที่ทดสอบ</p>')
 
     # ── funding / carry / basis (ดูเจ้าใหญ่ + carry monitor) ──
     rows_oi = []
@@ -437,8 +447,9 @@ td.num,th{{text-align:left}}
 
   <div class="warnbar">
     <span>⚠️</span>
-    <span><b>ยังไม่พิสูจน์ว่ามี edge</b> — ตัวเลขทั้งหมดเป็น paper trading บนข้อมูล {span_lo} → {span_hi}
-    (สัปดาห์เดียว / regime เดียว) ยังสรุป edge ไม่ได้ · ไม่ใช่คำแนะนำการลงทุน</span>
+    <span><b>ยังไม่พิสูจน์ว่ามี edge</b> (ความได้เปรียบที่ทำกำไรได้จริง) — ตัวเลขทั้งหมดเป็น
+    paper trading (จำลอง ไม่ใช่เงินจริง) บนข้อมูล {span_lo} → {span_hi}
+    (สัปดาห์เดียว / regime เดียว = สภาพตลาดแบบเดียว) ยังสรุปไม่ได้ · ไม่ใช่คำแนะนำการลงทุน</span>
   </div>
 
   <div class="kpis">{kpi}</div>
@@ -447,18 +458,18 @@ td.num,th{{text-align:left}}
     <div class="card">
       <div class="eqhead">
         <div>
-          <div class="eyebrow">Equity curve · cumulative (paper)</div>
+          <div class="eyebrow">Equity curve — เส้นทุนสะสม (paper = จำลอง ไม่ใช่เงินจริง)</div>
           <div class="eqbig num-{eq_cls}">{eq_end}</div>
         </div>
-        <div class="eqmeta mono">peak {eq_peak}<br>drawdown {eq_dd}</div>
+        <div class="eqmeta mono">peak (สูงสุด) {eq_peak}<br>drawdown (หดจากพีค) {eq_dd}</div>
       </div>
       {equity}
     </div>
     <div class="card">
-      <h2>Net หลังหักค่าธรรมเนียม</h2>
+      <h2>Net (กำไรสุทธิ) หลังหักค่าธรรมเนียม</h2>
       {fee_bars}
-      <div class="feenet">Net = <b class="num-{net_cls}">{net}</b> · ค่าฟีกิน ~{fee_pct}% ของ gross —
-      เทรดถี่เกินไป ค่าธรรมเนียมคือตัวชี้ขาด ไม่ใช่กลยุทธ์</div>
+      <div class="feenet">Net (สุทธิ) = <b class="num-{net_cls}">{net}</b> · ค่าฟีกิน ~{fee_pct}% ของ
+      gross (กำไรก่อนหักฟี) — เทรดถี่เกินไป ค่าธรรมเนียมคือตัวชี้ขาด ไม่ใช่กลยุทธ์</div>
     </div>
   </div>
 
@@ -466,13 +477,13 @@ td.num,th{{text-align:left}}
     <div class="card"><h2>ไม้เปิดค้าง ({open_count})</h2><div class="tblwrap">{open}</div></div>
     <div class="card"><h2>ปิดล่าสุด</h2><div class="tblwrap">{recent}</div></div>
 
-    <div class="card"><h2>แยกทิศทาง · avg RR</h2>{dir}</div>
+    <div class="card"><h2>แยกทิศทาง · avg RR (กำไรเฉลี่ย/ที่เสี่ยง)</h2>{dir}</div>
     <div class="card"><h2>แยกสาเหตุปิด · avg RR</h2>{exit}</div>
 
     <div class="card"><h2>แยกเหรียญ · avg RR</h2>{sym}</div>
     <div class="card"><h2>Funding · Carry · Basis (ดูเจ้าใหญ่)</h2><div class="tblwrap">{oi}</div></div>
 
-    <div class="card span2"><h2>Edge Lab — สถานะสมมติฐาน (OOS)</h2><div class="tblwrap">{edge}</div></div>
+    <div class="card span2"><h2>Edge Lab (ห้องแล็บทดสอบว่ากลยุทธ์มี edge จริงไหม) — สถานะสมมติฐาน</h2><div class="tblwrap">{edge}</div></div>
   </div>
 
   <div class="foot">
