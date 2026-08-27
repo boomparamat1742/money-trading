@@ -367,6 +367,19 @@ async def run() -> None:
         print(f"[startup] รวม OI สดรายวัน: เปิด (ทุก {moi_hour:02d}:00 UTC)")
         tasks.append(_merge_oi_loop(moi_hour))
 
+    # RTE forward paper-test (portfolio strategy คนละ cadence กับ pipeline เดิม) —
+    # เปิดด้วย RUN_RTE=true · เก็บ state ที่ Supabase (Railway ดิสก์ ephemeral)
+    # ⚠️ ยังไม่ใช่ edge พิสูจน์แล้ว (OOS 0.93 < bar) — รันเพื่อเก็บหลักฐาน live เท่านั้น
+    if os.environ.get("RUN_RTE", "false").lower() == "true":
+        from .rte.config import RTEConfig
+        from .rte.runner import RTEEngine
+        from .rte.store import open_rte_store
+        rte_cfg = RTEConfig()
+        rte_engine = RTEEngine(rte_cfg, open_rte_store(rte_cfg), notifier)
+        print(f"[startup] RTE forward paper-test: เปิด ({rte_cfg.strategy_version} "
+              f"· hash {rte_cfg.config_hash()})")
+        tasks.append(rte_engine.run_loop())
+
     await asyncio.gather(*tasks, return_exceptions=True)  # one failing task must not kill others
 
 
