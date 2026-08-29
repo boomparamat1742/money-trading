@@ -101,6 +101,19 @@ class RTEEngine:
                 out[s] = cs[-1].close
         return out
 
+    def _position_rows(self, marks: dict[str, float], equity: float) -> list[dict]:
+        """A3: snapshot P&L รายเหรียญหลัง rebalance (unrealized = qty×(mark−avg_entry))"""
+        rows = []
+        for sym, p in self.portfolio.positions.items():
+            m = marks.get(sym, p.avg_entry)
+            notional = p.qty * m
+            rows.append({
+                "symbol": sym, "qty": p.qty, "avg_entry": p.avg_entry, "mark_price": m,
+                "notional": notional, "unrealized_pnl": p.qty * (m - p.avg_entry),
+                "weight": (notional / equity) if equity else 0.0,
+            })
+        return rows
+
     async def process_bar(self, bar_open_time: int, funding: Optional[dict] = None):
         """ประมวลผลแท่งปิด 1 แท่ง — ถ้าเป็นรอบ rebalance เท่านั้นจึงตัดสินใจ.
         funding: dict symbol→อัตรารวมตั้งแต่ rebalance ก่อน (None = ดึงเอง/0)
@@ -129,10 +142,12 @@ class RTEEngine:
         events = classify(prev_w, dec, self.cfg)
 
         snapd = self.portfolio.snapshot(marks)
+        prows = self._position_rows(marks, snapd["equity"])
         try:
             self.store.record_rebalance(self.config_hash, dec, snapd["equity"],
                                         snapd["drawdown"], self.portfolio.halted)
             self.store.save_state(self.config_hash, self.portfolio, self.last_weights)
+            self.store.record_positions(self.config_hash, dec.bar_close_time, prows)  # A3
         except Exception as e:
             print(f"[rte] persist ล้มเหลว (ไม่หยุด loop): {e!r}")
 

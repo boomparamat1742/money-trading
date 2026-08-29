@@ -47,6 +47,13 @@ class _PgStore:
                 equity DOUBLE PRECISION, drawdown DOUBLE PRECISION, halted BOOLEAN,
                 selected JSONB, target_weights JSONB, reason TEXT, created_at TIMESTAMPTZ NOT NULL,
                 UNIQUE(strategy_version, bar_time))""")
+            # A3: ประวัติ P&L รายเหรียญต่อ rebalance (attribution ระยะยาว)
+            cur.execute("""CREATE TABLE IF NOT EXISTS rte_positions_log (
+                id BIGSERIAL PRIMARY KEY, strategy_version TEXT NOT NULL, config_hash TEXT NOT NULL,
+                bar_time BIGINT NOT NULL, symbol TEXT NOT NULL, qty DOUBLE PRECISION,
+                avg_entry DOUBLE PRECISION, mark_price DOUBLE PRECISION, notional DOUBLE PRECISION,
+                unrealized_pnl DOUBLE PRECISION, weight DOUBLE PRECISION, created_at TIMESTAMPTZ NOT NULL,
+                UNIQUE(strategy_version, bar_time, symbol))""")
 
     def load_state(self, config_hash: str) -> Optional[dict]:
         with self.conn.cursor() as cur:
@@ -83,6 +90,19 @@ class _PgStore:
                  json.dumps(dec.selected), json.dumps(dec.target_weights), dec.reason,
                  datetime.now(timezone.utc)))
 
+    def record_positions(self, config_hash, bar_time, rows) -> None:
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        with self.conn.cursor() as cur:
+            for r in rows:
+                cur.execute("""INSERT INTO rte_positions_log (strategy_version, config_hash,
+                    bar_time, symbol, qty, avg_entry, mark_price, notional, unrealized_pnl,
+                    weight, created_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    ON CONFLICT (strategy_version, bar_time, symbol) DO NOTHING""",
+                    (self.cfg.strategy_version, config_hash, bar_time, r["symbol"], r["qty"],
+                     r["avg_entry"], r["mark_price"], r["notional"], r["unrealized_pnl"],
+                     r["weight"], now))
+
     def close(self):
         try:
             self.conn.close()
@@ -106,6 +126,11 @@ class _SqliteStore:
             gross_exposure REAL, to_cash INTEGER, equity REAL, drawdown REAL, halted INTEGER,
             selected TEXT, target_weights TEXT, reason TEXT, created_at INTEGER,
             UNIQUE(strategy_version, bar_time))""")
+        self.conn.execute("""CREATE TABLE IF NOT EXISTS rte_positions_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, strategy_version TEXT, config_hash TEXT,
+            bar_time INTEGER, symbol TEXT, qty REAL, avg_entry REAL, mark_price REAL,
+            notional REAL, unrealized_pnl REAL, weight REAL, created_at INTEGER,
+            UNIQUE(strategy_version, bar_time, symbol))""")
         self.conn.commit()
 
     def load_state(self, config_hash: str) -> Optional[dict]:
@@ -134,6 +159,16 @@ class _SqliteStore:
              int(dec.btc_trend_ok), int(dec.crash_filter_ok), dec.breadth, dec.gross_exposure,
              int(dec.to_cash), equity, drawdown, int(halted),
              json.dumps(dec.selected), json.dumps(dec.target_weights), dec.reason, int(time.time())))
+        self.conn.commit()
+
+    def record_positions(self, config_hash, bar_time, rows) -> None:
+        for r in rows:
+            self.conn.execute("""INSERT OR IGNORE INTO rte_positions_log (strategy_version,
+                config_hash, bar_time, symbol, qty, avg_entry, mark_price, notional,
+                unrealized_pnl, weight, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                (self.cfg.strategy_version, config_hash, bar_time, r["symbol"], r["qty"],
+                 r["avg_entry"], r["mark_price"], r["notional"], r["unrealized_pnl"],
+                 r["weight"], int(time.time())))
         self.conn.commit()
 
     def close(self):

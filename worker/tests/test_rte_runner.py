@@ -41,7 +41,7 @@ def test_classify_enter_and_exit():
 
 class _FakeStore:
     def __init__(self):
-        self.rebals, self.states = [], []
+        self.rebals, self.states, self.poslogs = [], [], []
 
     def load_state(self, ch):
         return None
@@ -51,6 +51,9 @@ class _FakeStore:
 
     def save_state(self, ch, pf, w):
         self.states.append((pf.to_dict(), dict(w)))
+
+    def record_positions(self, ch, bar_time, rows):
+        self.poslogs.append((bar_time, rows))
 
 
 class _FakeNotifier:
@@ -88,6 +91,12 @@ def test_process_bar_replay_allocates_and_persists():
     assert eng.portfolio.gross_exposure(marks) > 0
     # แจ้งเตือนออกเพราะมี ENTER events
     assert eng.notifier.msgs
+    # A3: log P&L รายเหรียญ — ต้องมี 1 แถวต่อเหรียญที่ถือ
+    assert eng.store.poslogs
+    bar_time, rows = eng.store.poslogs[-1]
+    assert {r["symbol"] for r in rows} == set(dec.selected)
+    for r in rows:
+        assert r["qty"] > 0 and r["notional"] > 0 and "unrealized_pnl" in r
 
 
 def test_process_bar_skips_non_rebalance():
