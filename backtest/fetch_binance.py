@@ -26,6 +26,11 @@ PERP_BASE = "https://fapi.binance.com/fapi/v1/klines"   # USDⓈ-M perpetual
 INTERVAL_MS = {"1m": 60_000, "5m": 300_000, "15m": 900_000, "1h": 3_600_000,
                "4h": 14_400_000, "1d": 86_400_000}
 
+# Binance จำกัด request ต่อ "IP" (2400/นาที) — บน cloud (Railway) IP อาจใช้ร่วมกับ
+# ผู้เช่ารายอื่น ทำให้เจอ 429 เป็นครั้งคราวแม้เรายิงน้อย · จึงถอยแล้วลองใหม่แทนที่จะพัง
+RATE_LIMIT_CODES = (429, 418)     # 429 = too many requests · 418 = IP auto-ban ชั่วคราว
+MAX_RATE_RETRIES = 6
+
 
 def fetch(symbol: str, interval: str, total: int, base: str = BASE) -> list[list]:
     """Klines walked backwards from now. `base` selects spot (default) or perp
@@ -37,6 +42,7 @@ def fetch(symbol: str, interval: str, total: int, base: str = BASE) -> list[list
     rows: list[list] = []
     # walk backwards from now so we get the most recent `total` bars
     end_time = int(time.time() * 1000)
+    attempt = 0
     while len(rows) < total:
         limit = min(1000, total - len(rows))
         start_time = end_time - limit * step
@@ -49,9 +55,18 @@ def fetch(symbol: str, interval: str, total: int, base: str = BASE) -> list[list
             with urllib.request.urlopen(req, timeout=20) as resp:
                 batch = json.loads(resp.read().decode())
         except urllib.error.HTTPError as e:
+            # 429/418 = โดน rate limit (มัก IP ร่วมบน cloud) → ถอยแล้วลองใหม่ ไม่ crash
+            if e.code in RATE_LIMIT_CODES and attempt < MAX_RATE_RETRIES:
+                attempt += 1
+                wait = int(e.headers.get("Retry-After", 0) or 0) or min(2 ** attempt, 60)
+                print(f"  Binance {e.code} (rate limit) — รอ {wait}s แล้วลองใหม่ "
+                      f"({attempt}/{MAX_RATE_RETRIES})", flush=True)
+                time.sleep(wait)
+                continue                       # ลอง request เดิมซ้ำ (ไม่ขยับ end_time)
             raise SystemExit(f"Binance HTTP {e.code}: {e.read().decode()[:200]}")
         except urllib.error.URLError as e:
             raise SystemExit(f"เชื่อมต่อ Binance ไม่ได้ ({e.reason}) — ตรวจอินเทอร์เน็ต/ไฟร์วอลล์")
+        attempt = 0                            # สำเร็จแล้ว รีเซ็ตตัวนับ
         if not batch:
             break
         rows = batch + rows
